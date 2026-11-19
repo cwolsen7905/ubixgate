@@ -1,0 +1,106 @@
+# CI on the canonical GitLab project. The same gate runs on GitHub (`make check`).
+# Checks run in the test stage; approval only in merge request pipelines and promote only
+# in dev push pipelines, so the two never meet.
+stages: [build, test, deploy, approval, promote]
+
+# One pipeline per push. A merge request gets a merge request pipeline (the one that
+# "Pipelines must succeed" judges); the push to its branch then starts no branch pipeline of
+# its own. dev and main always get push pipelines (promote-to-main runs there), and so does
+# a branch with no open MR, or a tag.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_COMMIT_BRANCH != "dev" && $CI_COMMIT_BRANCH != "main"'
+      when: never
+    - when: always
+
+.every_pipeline:
+  rules:
+    - when: on_success
+
+# The repo is public and mirrored, so nothing private may be committed. The pattern of
+# private names lives in the PUBLIC_BOUNDARY_PATTERN CI variable (project settings, not the
+# repo, so the list itself is not published). The job prints file and line only, never the
+# matched text.
+public-boundary:
+  extends: .every_pipeline
+  tags: [shell]
+  script:
+    - |
+      if [ -z "${PUBLIC_BOUNDARY_PATTERN:-}" ]; then
+        echo "PUBLIC_BOUNDARY_PATTERN is not set in CI/CD variables; refusing to pass unchecked."
+        exit 1
+      fi
+      hits=$(grep -rniE --exclude-dir=.git -- "$PUBLIC_BOUNDARY_PATTERN" . | cut -d: -f1,2 || true)
+      if [ -n "$hits" ]; then
+        echo "Private names found (file:line):"
+        echo "$hits"
+        exit 1
+      fi
+      echo "Public boundary clean."
+
+# Go jobs run in the official Go image (the shell runner has no Go of its own), as the
+# runner's uid so nothing root-owned lands in the checkout. Build, module and lint caches
+# live under the runner's home, so later pipelines reuse them.
+.go:
+  extends: .every_pipeline
+  tags: [shell]
+  variables:
+    GO_IMAGE: golang:1.27
+  before_script:
+    - mkdir -p "$HOME/.cache/ubixgate-go"
+    - |
+      go_run() {
+        docker run --rm -v "$PWD:/src" -w /src --user "$(id -u):$(id -g)" \
+          -v "$HOME/.cache/ubixgate-go:/cache" \
+          -e HOME=/tmp -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod \
+          -e GOLANGCI_LINT_CACHE=/cache/lint -e GOFLAGS=-buildvcs=false \
+          -e VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}" \
+          "$GO_IMAGE" sh -c "$1"
+      }
+
+# fmt, vet, lint, prose style, size budget, script tests, unit and integration tests.
+go-check:
+  extends: .go
+  script:
+    - go_run 'git config --global --add safe.directory /src && go version && make check'
+
+go-cross:
+  extends: .go
+  script:
+    - go_run 'make cross VERSION=$VERSION'
+  artifacts:
+    paths: [dist/]
+    expire_in: 1 week
+
+# dev -> main. main only ever moves by fast-forward from a green dev (bin/promote.sh, which
+# fails closed and never forces). Runs only on a push pipeline of dev, after every check
+# above has passed. Needs the GITLAB_PROMOTE_TOKEN CI variable (masked and protected).
+promote-to-main:
+  stage: promote
+  tags: [shell]
+  needs: [public-boundary, go-check, go-cross]
+  resource_group: promote-main
+  interruptible: false
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev" && $CI_PIPELINE_SOURCE == "push"'
+  script:
+    - bash bin/promote.sh
+
+# Every merge needs a human sign-off: an Approve or a thumbs-up on the MR
+# (bin/ci/require-approval.sh). With "Pipelines must succeed" on, this job failing keeps a
+# merge waiting for a person. Agents never approve. GitLab does not re-run a pipeline on
+# approval: approve, then retry this job.
+# APPROVAL_CHECK_TOKEN: project access token, Reporter role, read_api scope. Masked but not
+# protected, so MR branches receive it. MERGE_APPROVAL_OWNERS (optional) lists usernames
+# whose sign-off counts, including on their own MR.
+require-approval:
+  stage: approval
+  tags: [shell]
+  timeout: 5 minutes
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - bash bin/ci/require-approval.sh
