@@ -1,0 +1,56 @@
+# uBixGate config for the demo (docker compose). Every value here is a demo value.
+listen: ":8080"
+public_url: http://localhost:8080/mcp   # the token audience; clients use this URL
+
+identity:
+  mode: jwt
+  issuer: http://demo-idp:9100
+  jwks_url: http://demo-idp:9100/jwks
+  claims: { user: sub, groups: groups, client: azp }
+
+vault:
+  address: http://ubixvault:8200
+  auth: { method: approle, role_id_file: /shared/role_id, secret_id_file: /shared/secret_id }
+
+upstreams:
+  - name: tickets
+    transport: http
+    url: http://tickets:9000/mcp
+    credential:
+      path: secret/data/mcp/tickets
+      field: token
+      header: Authorization
+      format: "Bearer {value}"
+      ttl: 60s
+  - name: shepherd
+    transport: stdio
+    command: [shepherd, mcp]
+    env: { SHEPHERD_HOME: /data/shepherd }
+
+limits: { per_user_per_minute: 120 }
+audit: { sink: file, path: /audit/audit.jsonl }
+
+policy:
+  rules:
+    # Contractors never create or delete anything, on any server.
+    - name: contractors-no-writes
+      effect: deny
+      when: { groups: [contractors] }
+      server: "*"
+      tools: ["*_create", "*_delete", lane_open, lane_close]
+
+    # Everyone may read Shepherd's state.
+    - name: devs-read-shepherd
+      effect: allow
+      when: { groups: [developers, contractors] }
+      server: shepherd
+      tools: [shepherd_status, lane_list, run_list]
+
+    # Developers may use the ticket tracker, for projects under myorg/ only.
+    - name: devs-tickets-own-project
+      effect: allow
+      when: { groups: [developers] }
+      server: tickets
+      tools: ["*"]
+      args: { project: "myorg/*" }
+      audit_args: [project]   # the project is logged; titles and bodies are not
