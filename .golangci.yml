@@ -1,0 +1,16 @@
+# golangci-lint v2. The default set (errcheck, govet, ineffassign, staticcheck, unused)
+# plus a few that catch real bugs in network code. Kept small on purpose.
+version: "2"
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - nilerr
+    - unconvert
+  exclusions:
+    presets:
+      - std-error-handling
+formatters:
+  enable:
+    - gofmt
