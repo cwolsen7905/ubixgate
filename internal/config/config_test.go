@@ -41,7 +41,7 @@ func TestParseFull(t *testing.T) {
 func TestParseRejects(t *testing.T) {
 	cases := []struct{ name, from, to, want string }{
 		{"unknown key", "listen:", "lisen:", "field lisen not found"},
-		{"no public url", "public_url: https://mcp.example.com", "public_url: ''", "public_url"},
+		{"no public url", "public_url: https://mcp.example.com/mcp", "public_url: ''", "public_url"},
 		{"bad mode", "mode: jwt", "mode: magic", "identity.mode"},
 		{"static off loopback", "mode: jwt", "mode: static\n  tokens: [{token: dev-token-0123456789, user: a}]\n  # ", "loopback"},
 		{"vault missing", "vault:\n  address: http://ubixvault:8200\n  auth: { method: approle, role_id_file: /run/role_id, secret_id_file: /run/secret_id }", "", "vault is required"},
