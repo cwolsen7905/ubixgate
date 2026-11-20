@@ -8,27 +8,7 @@ interface is listed under **Interface changes** in the release that makes it.
 
 ## [Unreleased]
 
-### Added
-
-- A Helm chart in `deploy/charts/ubixgate`: a Deployment from the gateway's config as a
-  value, a Service, and optionally an Ingress that exposes only the MCP endpoint and its
-  protected resource metadata, a ServiceMonitor and a PodDisruptionBudget. Config changes
-  roll the pods. It runs the published image by default. `make chart-check` lints and
-  renders it and validates the rendered config.
-- A container image, `ghcr.io/ubixsys/ubixgate`, pushed by each release for linux/amd64
-  and linux/arm64 and signed with keyless cosign.
-
-### Fixed
-
-- The Docker Compose demo now starts: its uBixVault needed `-dev-no-tls` to serve plain
-  HTTP on the demo's private network. CI now runs the Compose demo on every change.
-
-### Changed
-
-- Releases are published only at https://github.com/ubixsys/ubixgate/releases. Other
-  GitHub copies of the repository never carry release downloads or signatures.
-
-## [0.1.0-beta.1] - not yet released
+## [0.1.0-beta.1] - 2026-11-19
 
 The first public beta: one authenticated MCP endpoint in front of many MCP servers, with
 per-call policy, credential injection from Vault and an audit record for every call. It
@@ -51,8 +31,8 @@ on it.
   decides. Each caller's `tools/list` shows only the tools they may call, with
   `cacheScope: private`. Denials name the deciding rule. The policy reloads on SIGHUP.
 - Credential injection from a Vault-API server, tested against uBixVault (HashiCorp Vault
-  speaks the same API but is not tested in this release), logged in
-  with a token, AppRole or Kubernetes, renewed at half its TTL. HTTP upstreams get the
+  speaks the same API but is not tested in this release), logged in with a token, AppRole
+  or Kubernetes, renewed at half its TTL. HTTP upstreams get the
   credential as a header on every request, with one retry after a 401; stdio upstreams get
   it as an environment variable at start and are restarted when it expires. Reads are
   cached per credential, shared across concurrent calls, capped by the secret's lease and
@@ -62,9 +42,17 @@ on it.
   values are redacted unless the deciding rule keeps them, or replaced by an HMAC.
 - A per-user call limit (in memory, per replica).
 - `/healthz`, `/readyz` (upstreams connected and Vault healthy), Prometheus `/metrics`,
-  JSON logs, `ubixgate check` to validate a config, a distroless container image.
+  JSON logs, `ubixgate check` to validate a config.
+- A container image, `ghcr.io/ubixsys/ubixgate`: distroless, non-root, for linux/amd64 and
+  linux/arm64, signed with keyless cosign.
+- A Helm chart in `deploy/charts/ubixgate`: a Deployment from the gateway's config as a
+  value, a Service, and optionally an Ingress that exposes only the MCP endpoint and its
+  protected resource metadata, a ServiceMonitor and a PodDisruptionBudget. Config changes
+  roll the pods. It runs the published image by default.
 - A demo: Docker Compose with uBixVault, a toy identity provider, a fake ticket tracker
   and uBixShepherd as a stdio upstream; `examples/demo/run-local.sh` runs the same demo
-  without Docker; `demo.sh` walks through it with curl.
+  without Docker; `demo.sh` walks through it with curl. CI runs the Compose demo on every
+  change and checks its outcomes.
 - Release tooling: `make check`, cross builds for six platforms, signed checksums, and
-  release notes from this file.
+  release notes from this file. Releases are published only at
+  https://github.com/ubixsys/ubixgate/releases.

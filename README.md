@@ -13,7 +13,7 @@ questions:
 | Where does the upstream's credential come from? | Vault, read at call time. The agent never holds it |
 | What did they do? | One JSON audit line per call: who, which tool, the decision, the rule that made it |
 
-**Status: beta (`0.1.0-beta.1`, not yet tagged).** It works end to end and is tested,
+**Status: beta (`0.1.0-beta.1`).** It works end to end and is tested,
 but it has had **no independent security review**, and its config format, audit fields
 and metrics may still change between betas. Read [What it does not protect against](#what-it-does-not-protect-against)
 before putting it in front of anything that matters.
