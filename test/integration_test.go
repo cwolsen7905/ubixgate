@@ -489,3 +489,29 @@ func TestClientRequests(t *testing.T) {
 		t.Errorf("audit:\n got %v\nwant %v", got, want)
 	}
 }
+
+// When one request in a result is denied, none is sent, and the allowed ones are
+// recorded as not sent rather than ok.
+func TestClientRequestsMixed(t *testing.T) {
+	e := start(t, nil)
+	alice := e.connectWith(t, e.token("alice", "developers"), "2026-07-28", &mcp.ClientOptions{
+		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return &mcp.ElicitResult{Action: "accept"}, nil
+		}})
+	text, isErr := call(t, alice, "tickets__ticket_close", map[string]any{"project": "myorg/web", "title": "and summarize"})
+	if !isErr || text != "denied by rule default-deny" {
+		t.Fatalf("mixed: %q", text)
+	}
+	var got []string
+	for _, r := range readAudit(t, e.audit) {
+		got = append(got, fmt.Sprintf("%s %s %s %s %s", r.ClientRequest, r.Decision, r.Rule, r.Status, r.Reason))
+	}
+	want := []string{
+		"elicitation allow alice-confirms-closes not_sent client_request_denied",
+		"sampling deny default-deny denied ",
+		" deny default-deny denied client_request_denied",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("audit:\n got %q\nwant %q", got, want)
+	}
+}

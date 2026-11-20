@@ -53,9 +53,13 @@ func (tk *Tickets) Handler() http.Handler {
 		func(_ context.Context, req *mcp.CallToolRequest, in TicketArgs) (*mcp.CallToolResult, any, error) {
 			ans, ok := req.Params.InputResponses["confirm"].(*mcp.ElicitResult)
 			if !ok {
-				return &mcp.CallToolResult{RequestState: "state-for-" + in.Project, InputRequests: mcp.InputRequestMap{
+				asks := mcp.InputRequestMap{
 					"confirm": &mcp.ElicitParams{Message: "Close it?", RequestedSchema: map[string]any{"type": "object"}},
-				}}, nil, nil
+				}
+				if in.Title == "and summarize" { // a second request, of another kind
+					asks["summary"] = &mcp.CreateMessageWithToolsParams{MaxTokens: 10} //nolint:staticcheck // sampling is deprecated in 2026-07-28 but still sent
+				}
+				return &mcp.CallToolResult{RequestState: "state-for-" + in.Project, InputRequests: asks}, nil, nil
 			}
 			text := fmt.Sprintf("closed in %s: answer %s, state %s", in.Project, ans.Action, req.Params.RequestState)
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil

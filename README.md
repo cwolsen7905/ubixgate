@@ -258,7 +258,7 @@ One JSON object per line. Field names are a versioned interface.
 | `server`, `tool` | The upstream and the full tool name |
 | `client_request` | Set on the record for an upstream's request to the client: `elicitation`, `sampling` or `roots`. It shares the `request_id` of the call that made it |
 | `decision`, `rule` | `allow` or `deny`, and the rule that decided |
-| `status`, `reason` | `ok`, `tool_error`, `upstream_error`, `timeout`, `denied`, `input_required` (the call waits for the client's answers) or `not_sent` (allowed, but this client cannot receive client requests); a reason such as `credential_unavailable`, `client_request_denied` or `client_protocol` |
+| `status`, `reason` | `ok`, `tool_error`, `upstream_error`, `timeout`, `denied`, `input_required` (the call waits for the client's answers) or `not_sent` (allowed, but not sent: another request in the same result was denied, or this client cannot receive them); a reason such as `credential_unavailable`, `client_request_denied` or `client_protocol` |
 | `latency_ms` | Time spent in the gateway, including the upstream |
 | `args` | Argument keys, with values `[redacted]` unless the rule's `audit_args` keeps them. With `audit.hash_args: true` and a `hash_key_file`, values become an HMAC so equal values can be correlated |
 

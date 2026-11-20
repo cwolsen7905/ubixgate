@@ -272,6 +272,7 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 		rec.Status, rec.Reason = audit.StatusUpstreamError, err.Error()
 		return finish(errorResult("upstream error"))
 	case res.NeedsInput():
+		rec.LatencyMS = time.Since(start).Milliseconds() // for the request records
 		out, denied := g.needsInput(ctx, rec, pr, argsHash(req.Params.Arguments), res, canAnswer(req))
 		switch {
 		case denied != "":

@@ -108,26 +108,34 @@ func (g *Gateway) needsInput(ctx context.Context, rec audit.Record, pr policy.Re
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
+	// Decide on every request first: a record says ok only if the request was sent,
+	// which needs every request in the result to be allowed.
+	recs := make([]audit.Record, len(ids))
 	denied := ""
-	for _, id := range ids {
+	for i, id := range ids {
 		r := rec
 		r.ClientRequest = kindOf(res.InputRequests[id])
 		pr.ClientRequest = r.ClientRequest
 		dec, err := g.decider().Decide(ctx, pr)
-		switch {
-		case err != nil || !dec.Allowed():
-			r.Decision, r.Rule, r.Status = string(policy.Deny), dec.Rule, audit.StatusDenied
-			if err != nil {
-				r.Rule = policy.DefaultDeny
-			}
+		if err != nil {
+			dec = policy.Decision{Effect: policy.Deny, Rule: policy.DefaultDeny}
+		}
+		r.Decision, r.Rule, r.Status = string(dec.Effect), dec.Rule, audit.StatusOK
+		if !dec.Allowed() {
+			r.Status = audit.StatusDenied
 			if denied == "" {
 				denied = r.Rule
 			}
+		}
+		recs[i] = r
+	}
+	for _, r := range recs {
+		switch {
+		case r.Status == audit.StatusDenied:
+		case denied != "":
+			r.Status, r.Reason = audit.StatusNotSent, "client_request_denied"
 		case !canAnswer:
-			r.Decision, r.Rule, r.Status = string(policy.Allow), dec.Rule, audit.StatusNotSent
-			r.Reason = "client_protocol"
-		default:
-			r.Decision, r.Rule, r.Status = string(policy.Allow), dec.Rule, audit.StatusOK
+			r.Status, r.Reason = audit.StatusNotSent, "client_protocol"
 		}
 		g.write(r)
 	}
