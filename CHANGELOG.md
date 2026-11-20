@@ -17,6 +17,10 @@ interface is listed under **Interface changes** in the release that makes it.
   10 minutes, and is refused for anyone else (`invalid-request-state`). Clients and upstreams on
   2025-11-25 are refused them. `request_state_key_file` shares the sealing key across
   replicas.
+- A tamper-evident audit log: with `audit.chain_key_file`, each record carries an
+  HMAC chained over the one before, continued across restarts, and
+  `ubixgate audit verify` names the first edited, removed, inserted or reordered line.
+  Lines deleted from the end are not detectable from the file alone.
 - `ubixgate policy explain`: the decision, deciding rule, what the caller is shown,
   whether the tool is listed and which arguments are logged, for a user, groups, client,
   tool and arguments, without a live call. It runs the same decision step as the gateway.
@@ -37,6 +41,7 @@ interface is listed under **Interface changes** in the release that makes it.
   rule without it, as before, decides only calls.
 - Audit records gain `client_request`, the statuses `input_required` and `not_sent`, and
   the reasons `client_request_denied` and `client_protocol`.
+- Audit records may end with a `chain` field. Config: `audit.chain_key_file`.
 - Config: `credential.catalog_path`. A `{user}` path is rejected on stdio upstreams.
 - Upstreams no longer see the gateway declare the roots capability; it declares no
   client capabilities of its own.

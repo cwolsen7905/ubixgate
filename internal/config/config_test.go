@@ -56,6 +56,7 @@ func TestParseRejects(t *testing.T) {
 		{"policy names unknown server", "server: tickets", "server: jira", "matches no configured upstream"},
 		{"bad sink", "sink: file", "sink: kafka", "audit.sink"},
 		{"hash without key", "sink: file,", "hash_args: true, sink: file,", "hash_key_file"},
+		{"chain on stdout", "sink: file, path: /var/log/ubixgate/audit.jsonl", "sink: stdout, chain_key_file: /run/k", "needs the file sink"},
 		{"per-user without catalog", "path: secret/data/mcp/tickets", "path: secret/data/mcp/tickets/{user}", "needs catalog_path"},
 		{"per-user catalog with user", "path: secret/data/mcp/tickets", "path: x/{user}\n      catalog_path: y/{user}", "needs catalog_path"},
 		{"catalog without per-user", "path: secret/data/mcp/tickets", "path: x\n      catalog_path: y", "only for a per-user"},

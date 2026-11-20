@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ubixsys/ubixgate/internal/audit"
 	"github.com/ubixsys/ubixgate/internal/config"
 	"github.com/ubixsys/ubixgate/internal/gateway"
 	"github.com/ubixsys/ubixgate/internal/ops"
@@ -30,6 +31,8 @@ commands:
   policy explain -tool SERVER__TOOL -user U [-groups G1,G2] [-client C]
                  [-arg KEY=VALUE]... [-client-request KIND] [-config FILE]
                        print the decision and the rule that made it, offline
+  audit verify [-config FILE] [-key KEYFILE] [AUDIT_FILE]
+                       check a chained audit log; name the first broken line
   version              print the version
 `
 
@@ -66,6 +69,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		return explain(args[2:], stdout, stderr)
+	case "audit":
+		if len(args) < 2 || args[1] != "verify" {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
+		return verifyAudit(args[2:], stdout, stderr)
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -145,6 +154,62 @@ func explain(args []string, stdout, stderr io.Writer) int {
 	if !dec.Allowed() {
 		return 1
 	}
+	return 0
+}
+
+// verifyAudit checks a chained audit log. The key and file come from the config unless
+// given. Exit status: 0 intact, 1 broken or unreadable, 2 usage.
+func verifyAudit(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "ubixgate.yaml", "config file, for audit.path and audit.chain_key_file")
+	keyFile := fs.String("key", "", "chain key file; overrides the config's")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 1 {
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	logFile := fs.Arg(0)
+	if *keyFile == "" || logFile == "" {
+		cfg, err := config.Load(*path)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if *keyFile == "" {
+			*keyFile = cfg.Audit.ChainKeyFile
+		}
+		if logFile == "" {
+			logFile = cfg.Audit.Path
+		}
+	}
+	if *keyFile == "" {
+		fmt.Fprintln(stderr, "ubixgate: no chain key: set audit.chain_key_file or pass -key")
+		return 1
+	}
+	key, err := gateway.ReadKey(*keyFile)
+	if err != nil {
+		fmt.Fprintln(stderr, "ubixgate:", err)
+		return 1
+	}
+	f, err := os.Open(logFile)
+	if err != nil {
+		fmt.Fprintln(stderr, "ubixgate:", err)
+		return 1
+	}
+	defer f.Close()
+	n, last, err := audit.Verify(f, key)
+	if err != nil {
+		fmt.Fprintf(stdout, "%s: %v\n", logFile, err)
+		switch {
+		case n == 1:
+			fmt.Fprintln(stdout, "Line 1 verifies.")
+		case n > 1:
+			fmt.Fprintf(stdout, "Lines 1 to %d verify.\n", n)
+		}
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s: ok, %d records\nlast chain: %s\n", logFile, n, last)
+	fmt.Fprintln(stdout, "Lines removed from the end cannot be detected here: compare the last chain with a copy kept elsewhere.")
 	return 0
 }
 

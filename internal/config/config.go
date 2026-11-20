@@ -98,6 +98,8 @@ type Audit struct {
 	Path        string `yaml:"path"`
 	HashArgs    bool   `yaml:"hash_args"`
 	HashKeyFile string `yaml:"hash_key_file"`
+	// ChainKeyFile turns on the HMAC chain over the file's records (audit verify).
+	ChainKeyFile string `yaml:"chain_key_file"`
 }
 
 // Policy is the rule list.
@@ -283,6 +285,9 @@ func (c *Config) validate() error {
 		}
 	default:
 		bad("audit.sink must be file or stdout")
+	}
+	if c.Audit.ChainKeyFile != "" && c.Audit.Sink != "file" {
+		bad("audit: chain_key_file needs the file sink, so a restart can continue the chain")
 	}
 	if c.Audit.HashArgs && c.Audit.HashKeyFile == "" {
 		bad("audit: hash_args needs hash_key_file")

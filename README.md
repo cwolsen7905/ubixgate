@@ -169,6 +169,7 @@ upstreams:
 limits: { per_user_per_minute: 120 }       # in memory, per replica
 request_state_key_file: /run/state_key     # optional; see "Requests to the client" below
 audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }   # or sink: stdout
+# audit.chain_key_file: /run/audit_key   # chain each record to the one before; see "Audit records"
 ```
 
 ### Per-user credentials
@@ -293,7 +294,24 @@ One JSON object per line. Field names are a versioned interface.
 | `decision`, `rule` | `allow` or `deny`, and the rule that decided |
 | `status`, `reason` | `ok`, `tool_error`, `upstream_error`, `timeout`, `denied`, `input_required` (the call waits for the client's answers) or `not_sent` (allowed, but not sent: another request in the same result was denied, or this client cannot receive them); a reason such as `credential_unavailable`, `client_request_denied` or `client_protocol` |
 | `latency_ms` | Time spent in the gateway, including the upstream |
+| `chain` | With `chain_key_file`: the HMAC linking this record to the one before. Always the last field |
 | `args` | Argument keys, with values `[redacted]` unless the rule's `audit_args` keeps them. With `audit.hash_args: true` and a `hash_key_file`, values become an HMAC so equal values can be correlated |
+
+With `audit.chain_key_file` (a key of at least 32 bytes, file sink only), every record
+ends with a `chain` field: an HMAC-SHA256 over the previous record's chain and this line.
+After a restart the gateway continues the chain from the file's last line, and it refuses
+to start a chain on top of unchained records. `ubixgate audit verify` checks the file and
+names the first line that is edited, removed, inserted or reordered:
+
+```sh
+$ ubixgate audit verify -config ubixgate.yaml
+/var/log/ubixgate/audit.jsonl: line 2: chain does not follow: this line or one before it was edited, removed or inserted
+Line 1 verifies.
+```
+
+On success it prints the last chain value. Lines cut off the end of the file leave a
+valid shorter chain, so keep a copy of the last chain somewhere the gateway host cannot
+write, and compare.
 
 Requests that fail authentication get no audit record (there is no verified caller to
 name). They are counted in `ubixgate_auth_failures_total` and logged.
@@ -303,6 +321,7 @@ name). They are counted in `ubixgate_auth_failures_total` and logged.
 ```sh
 make build                                   # bin/ubixgate
 bin/ubixgate check ubixgate.yaml
+bin/ubixgate audit verify -config ubixgate.yaml   # with audit.chain_key_file set
 bin/ubixgate policy explain -user alice@example.com -groups developers -tool tickets__ticket_list
 bin/ubixgate serve -config ubixgate.yaml     # -log-level debug for more
 docker build -t ubixgate .                   # distroless, non-root; or use the released
@@ -366,8 +385,12 @@ policy allows can still do everything that call can do.
   boundary, unless your IdP issues per-client tokens.
 - **Shared state inside stdio upstreams.** One process serves every caller. If it keeps
   state between calls, users can see each other's effects there.
-- **Tampering with the audit log by someone with file access.** The file is opened
-  append-only, not made tamper-evident. Ship it off the host if that matters.
+- **Tampering with the audit log by someone with file access**, unless
+  `chain_key_file` is set. With it, editing, removing, inserting or reordering records is
+  detected by `ubixgate audit verify`. Still possible: deleting lines from the end of the
+  file, or the whole file, and rewriting the log entirely by anyone who can also read
+  the key. Keep the key off the log's host if you can, and the last chain value
+  elsewhere. Ship the log off the host if that matters.
 - **Denial of service** beyond the per-user limit, which is per replica.
 - Anything an independent review would catch: **there has been none.**
 
