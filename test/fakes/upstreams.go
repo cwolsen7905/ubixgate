@@ -26,6 +26,9 @@ type Tickets struct {
 	Token    string
 	Identity string // what the tool replies it is authenticated as
 	Versions []string
+	Users    map[string]string // personal tokens ("Bearer <token>") to the person they name
+
+	calls []string // who each tool call was authenticated as
 
 	mu      sync.Mutex
 	seen    []http.Header
@@ -37,8 +40,12 @@ func (tk *Tickets) Handler() http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "tickets", Version: "0.0.1"},
 		&mcp.ServerOptions{SupportedProtocolVersions: tk.Versions})
 	reply := func(verb string) mcp.ToolHandlerFor[TicketArgs, any] {
-		return func(_ context.Context, _ *mcp.CallToolRequest, in TicketArgs) (*mcp.CallToolResult, any, error) {
-			text := fmt.Sprintf("authenticated as %s: %s in %s", tk.Identity, verb, in.Project)
+		return func(_ context.Context, req *mcp.CallToolRequest, in TicketArgs) (*mcp.CallToolResult, any, error) {
+			who := tk.whoIs(req.Extra.Header.Get("Authorization"))
+			tk.mu.Lock()
+			tk.calls = append(tk.calls, who)
+			tk.mu.Unlock()
+			text := fmt.Sprintf("authenticated as %s: %s in %s", who, verb, in.Project)
 			if in.Project == "" {
 				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "project is required"}}}, nil, nil
 			}
@@ -69,7 +76,8 @@ func (tk *Tickets) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tk.mu.Lock()
 		tk.seen = append(tk.seen, r.Header.Clone())
-		ok := r.Header.Get("Authorization") == "Bearer "+tk.Token
+		_, personal := tk.Users[r.Header.Get("Authorization")]
+		ok := r.Header.Get("Authorization") == "Bearer "+tk.Token || personal
 		if !ok {
 			tk.refused++
 		}
@@ -80,6 +88,20 @@ func (tk *Tickets) Handler() http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+func (tk *Tickets) whoIs(auth string) string {
+	if u, ok := tk.Users[auth]; ok {
+		return u
+	}
+	return tk.Identity
+}
+
+// Calls reports who each tool call was authenticated as, in order.
+func (tk *Tickets) Calls() []string {
+	tk.mu.Lock()
+	defer tk.mu.Unlock()
+	return append([]string(nil), tk.calls...)
 }
 
 // SetToken changes the token the server accepts, as a rotation would.

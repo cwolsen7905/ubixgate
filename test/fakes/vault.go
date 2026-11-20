@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	pathpkg "path"
 	"strings"
 	"sync"
 )
@@ -63,7 +64,8 @@ func (v *Vault) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusServiceUnavailable, "sealed")
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/v1/")
+	// Resolve dot segments, as servers and proxies in front of Vault may.
+	path := strings.TrimPrefix(pathpkg.Clean(r.URL.Path), "/v1/")
 	switch {
 	case path == "sys/health":
 		reply(200, map[string]any{"initialized": true, "sealed": false})

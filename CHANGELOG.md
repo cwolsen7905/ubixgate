@@ -17,6 +17,11 @@ interface is listed under **Interface changes** in the release that makes it.
   10 minutes, and is refused for anyone else (`invalid-request-state`). Clients and upstreams on
   2025-11-25 are refused them. `request_state_key_file` shares the sealing key across
   replicas.
+- Per-user upstream credentials: an HTTP upstream's `credential.path` may contain
+  `{user}`, so each call uses the caller's own secret and the upstream sees the person.
+  A caller without one is refused (status `denied`, reason `credential_unavailable`),
+  never given the shared credential. `catalog_path` is the shared secret used only to
+  connect and list tools.
 
 ### Changed
 
@@ -29,6 +34,7 @@ interface is listed under **Interface changes** in the release that makes it.
   rule without it, as before, decides only calls.
 - Audit records gain `client_request`, the statuses `input_required` and `not_sent`, and
   the reasons `client_request_denied` and `client_protocol`.
+- Config: `credential.catalog_path`. A `{user}` path is rejected on stdio upstreams.
 - Upstreams no longer see the gateway declare the roots capability; it declares no
   client capabilities of its own.
 

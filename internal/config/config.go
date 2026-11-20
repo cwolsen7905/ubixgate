@@ -79,7 +79,13 @@ type Credential struct {
 	Format string        `yaml:"format"` // e.g. "Bearer {value}"; default "{value}"
 	Env    string        `yaml:"env"`    // stdio: environment variable to set
 	TTL    time.Duration `yaml:"ttl"`    // cache lifetime, capped by the lease; default 60s
+	// CatalogPath is read when Path names a per-user secret ("{user}"): it is used to
+	// connect and list tools, never for a call.
+	CatalogPath string `yaml:"catalog_path"`
 }
+
+// PerUser reports whether each caller's calls use their own secret.
+func (c *Credential) PerUser() bool { return strings.Contains(c.Path, "{user}") }
 
 // Limits holds the per-user call limit.
 type Limits struct {
@@ -226,6 +232,14 @@ func (c *Config) validate() error {
 			}
 			if u.Transport == "http" && cr.Env != "" {
 				bad("%s: credential.env is for stdio upstreams; use header", where)
+			}
+			switch {
+			case cr.PerUser() && u.Transport != "http":
+				bad("%s: a per-user credential needs an http upstream; one stdio process serves every caller", where)
+			case cr.PerUser() && (cr.CatalogPath == "" || strings.Contains(cr.CatalogPath, "{user}")):
+				bad("%s: a per-user credential needs catalog_path, without {user}, to list tools", where)
+			case !cr.PerUser() && cr.CatalogPath != "":
+				bad("%s: catalog_path is only for a per-user credential path", where)
 			}
 		}
 	}

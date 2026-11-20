@@ -259,13 +259,16 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 
 	rec.Decision, rec.Rule = string(policy.Allow), dec.Rule
 	rec.Args = g.opts.Redactor.Redact(args, dec.AuditArgs)
-	res, err := r.up.Call(ctx, params)
+	res, err := r.up.Call(ctx, p.User, params)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		rec.Status, rec.Reason = audit.StatusTimeout, "upstream did not answer in time"
 		return finish(errorResult("upstream timed out"))
 	case errors.Is(err, secrets.ErrUnavailable):
 		rec.Status, rec.Reason = audit.StatusUpstreamError, "credential_unavailable"
+		if r.up.PerUser() { // this caller has no credential of their own: a refusal
+			rec.Status = audit.StatusDenied
+		}
 		g.opts.Log.Warn("credential unavailable", "server", server, "err", err, "request_id", rec.RequestID)
 		return finish(errorResult("upstream error: credential unavailable"))
 	case err != nil:

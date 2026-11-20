@@ -33,6 +33,10 @@ func TestParseFull(t *testing.T) {
 	if r := c.Policy.Rules[1]; r.Effect != policy.Allow || r.Args["project"] != "myorg/*" || r.When.Clients[0] != "claude-code" {
 		t.Errorf("rule = %+v", r)
 	}
+	src := strings.Replace(string(load(t)), "path: secret/data/mcp/tickets", "path: m/{user}\n      catalog_path: m/shared", 1)
+	if pc, err := Parse([]byte(src)); err != nil || !pc.Upstream("tickets").Credential.PerUser() {
+		t.Errorf("per-user credential: %v", err)
+	}
 	if c.Identity.Claims.User != "email" {
 		t.Errorf("claims = %+v", c.Identity.Claims)
 	}
@@ -52,6 +56,10 @@ func TestParseRejects(t *testing.T) {
 		{"policy names unknown server", "server: tickets", "server: jira", "matches no configured upstream"},
 		{"bad sink", "sink: file", "sink: kafka", "audit.sink"},
 		{"hash without key", "sink: file,", "hash_args: true, sink: file,", "hash_key_file"},
+		{"per-user without catalog", "path: secret/data/mcp/tickets", "path: secret/data/mcp/tickets/{user}", "needs catalog_path"},
+		{"per-user catalog with user", "path: secret/data/mcp/tickets", "path: x/{user}\n      catalog_path: y/{user}", "needs catalog_path"},
+		{"catalog without per-user", "path: secret/data/mcp/tickets", "path: x\n      catalog_path: y", "only for a per-user"},
+		{"per-user on stdio", "env: { SHEPHERD_HOME: /data/shepherd }", "env: { SHEPHERD_HOME: /data/shepherd }\n    credential: { path: \"x/{user}\", catalog_path: y, field: t, env: T }", "needs an http upstream"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
