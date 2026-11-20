@@ -1,0 +1,49 @@
+# The uBixGate demo: docker compose -f examples/demo/compose.yaml up -d --build
+# then ./demo.sh from the repo root. Everything here is throwaway demo state.
+name: ubixgate-demo
+
+services:
+  # uBixVault from its published image. Its data lives in memory, so every start is a
+  # fresh vault that vault-init prepares again.
+  ubixvault:
+    image: ghcr.io/ubixsys/ubixvault:1.7.0
+    command: ["server", "-listen", "0.0.0.0:8200", "-data", "/var/lib/ubixvault"]
+    tmpfs: ["/var/lib/ubixvault:uid=65532,gid=65532"]
+
+  # One-shot: initialise and unseal the vault, store the tickets token, create the
+  # gateway's AppRole. uBixVault has no dev mode, so this step stands in for one.
+  vault-init:
+    image: alpine:3.20
+    entrypoint: ["sh", "-c", "apk add --no-cache curl jq > /dev/null && mkdir -p /audit && chmod 777 /audit && sh /init/vault-init.sh"]
+    environment: { VAULT_ADDR: "http://ubixvault:8200", SHARED: /shared }
+    volumes:
+      - ./vault-init.sh:/init/vault-init.sh:ro
+      - ./out/shared:/shared
+      - ./out/audit:/audit
+    depends_on: [ubixvault]
+
+  demo-idp:
+    build: { context: ../.., dockerfile: examples/demo/Dockerfile, target: demo-idp }
+    environment:
+      DEMO_IDP_ISSUER: http://demo-idp:9100
+      DEMO_IDP_AUDIENCE: http://localhost:8080/mcp
+    ports: ["9100:9100"]
+
+  tickets:
+    build: { context: ../.., dockerfile: examples/demo/Dockerfile, target: tickets }
+    environment: { TICKETS_TOKEN_FILE: /shared/tickets-token }
+    volumes: ["./out/shared:/shared:ro"]
+    depends_on:
+      vault-init: { condition: service_completed_successfully }
+
+  ubixgate:
+    build: { context: ../.., dockerfile: examples/demo/Dockerfile, target: gateway }
+    ports: ["8080:8080"]
+    volumes:
+      - ./gateway.yaml:/etc/ubixgate/ubixgate.yaml:ro
+      - ./out/shared:/shared:ro
+      - ./out/audit:/audit
+    depends_on:
+      vault-init: { condition: service_completed_successfully }
+      demo-idp: { condition: service_started }
+      tickets: { condition: service_started }

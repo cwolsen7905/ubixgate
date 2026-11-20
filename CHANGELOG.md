@@ -8,16 +8,42 @@ interface is listed under **Interface changes** in the release that makes it.
 
 ## [Unreleased]
 
+## [0.1.0-beta.1] - not yet released
+
+The first public beta: one authenticated MCP endpoint in front of many MCP servers, with
+per-call policy, credential injection from Vault and an audit record for every call. It
+has had no independent security review; see the README's security model before relying
+on it.
+
 ### Added
 
-- Repository skeleton: `make check` (gofmt, vet, golangci-lint, prose style, size budget,
-  tests), GitLab CI with promotion from `dev` to `main`, GitHub Actions for CI and
-  releases, and a `ubixgate version` command.
-- Policy evaluator (`internal/policy`): named allow and deny rules matched on user,
-  group, client, server, tool globs and top-level string argument globs; deny rules
-  first, then allow, first match wins, default deny. Catalog filtering hides tools a
-  caller can never call.
-- JWT validation (`internal/identity`) with the standard library only: RS256 and ES256,
-  issuer, audience equal to the gateway's URL, `exp` and `nbf` with 60 seconds of skew,
-  JWKS caching with rotation on an unknown key ID. A static token mode for local
-  development, and RFC 9728 protected resource metadata.
+- `ubixgate serve`: a Streamable HTTP MCP endpoint (stateless) that accepts protocol
+  revisions 2026-07-28 and 2025-11-25 from clients, in front of HTTP and stdio upstreams.
+  Upstreams are spoken to in whatever revision they support, down to 2025-11-25. Tools are
+  named `server__tool`.
+- Authentication with OIDC access tokens: RS256 and ES256 only, issuer, audience equal to
+  the gateway's URL, `exp` and `nbf` with 60 seconds of skew, a JWKS cache that picks up
+  key rotation. JWT validation uses only the Go standard library. A static token mode for
+  local development, refused on non-loopback addresses. RFC 9728 protected resource
+  metadata, linked from every 401.
+- A deny-by-default policy of named rules, matched on user, group, client, server, tool
+  globs and top-level string argument globs. Deny rules are checked first; the first match
+  decides. Each caller's `tools/list` shows only the tools they may call, with
+  `cacheScope: private`. Denials name the deciding rule. The policy reloads on SIGHUP.
+- Credential injection from a Vault-API server (uBixVault or HashiCorp Vault), logged in
+  with a token, AppRole or Kubernetes, renewed at half its TTL. HTTP upstreams get the
+  credential as a header on every request, with one retry after a 401; stdio upstreams get
+  it as an environment variable at start and are restarted when it expires. Reads are
+  cached per credential, shared across concurrent calls, capped by the secret's lease and
+  never served past expiry. The caller's own token is never forwarded.
+- One JSON-lines audit record per tool call with request ID, user, groups, client,
+  declared client, tool, decision, deciding rule, status, reason and latency. Argument
+  values are redacted unless the deciding rule keeps them, or replaced by an HMAC.
+- A per-user call limit (in memory, per replica).
+- `/healthz`, `/readyz` (upstreams connected and Vault healthy), Prometheus `/metrics`,
+  JSON logs, `ubixgate check` to validate a config, a distroless container image.
+- A demo: Docker Compose with uBixVault, a toy identity provider, a fake ticket tracker
+  and uBixShepherd as a stdio upstream; `examples/demo/run-local.sh` runs the same demo
+  without Docker; `demo.sh` walks through it with curl.
+- Release tooling: `make check`, cross builds for six platforms, signed checksums, and
+  release notes from this file.

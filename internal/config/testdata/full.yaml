@@ -1,0 +1,44 @@
+listen: ":8080"
+public_url: https://mcp.example.com/mcp
+
+identity:
+  mode: jwt
+  issuer: https://idp.example.com
+  jwks_url: https://idp.example.com/jwks
+  claims: { user: email, groups: groups, client: azp }
+
+vault:
+  address: http://ubixvault:8200
+  auth: { method: approle, role_id_file: /run/role_id, secret_id_file: /run/secret_id }
+
+upstreams:
+  - name: tickets
+    transport: http
+    url: http://tickets:9000/mcp
+    credential:
+      path: secret/data/mcp/tickets
+      field: token
+      format: "Bearer {value}"
+      ttl: 30s
+  - name: shepherd
+    transport: stdio
+    command: [shepherd, mcp]
+    env: { SHEPHERD_HOME: /data/shepherd }
+
+limits: { per_user_per_minute: 120 }
+audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }
+
+policy:
+  rules:
+    - name: contractors-no-writes
+      effect: deny
+      when: { groups: [contractors] }
+      server: "*"
+      tools: ["*_create", "*_delete"]
+    - name: devs-tickets-own-project
+      effect: allow
+      when: { groups: [developers], clients: [claude-code] }
+      server: tickets
+      tools: ["*"]
+      args: { project: "myorg/*" }
+      audit_args: [project]
