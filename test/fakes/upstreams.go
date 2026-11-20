@@ -28,22 +28,32 @@ type Tickets struct {
 	Versions []string
 	Users    map[string]string // personal tokens ("Bearer <token>") to the person they name
 
-	calls []string // who each tool call was authenticated as
+	calls    []string // who each tool call was authenticated as
+	sessions []string // the MCP session each tool call came on, "" for none
 
 	mu      sync.Mutex
 	seen    []http.Header
 	refused int
 }
 
-// Handler returns the HTTP handler for the MCP endpoint.
-func (tk *Tickets) Handler() http.Handler {
+// Handler returns the HTTP handler for the MCP endpoint. It is stateless.
+func (tk *Tickets) Handler() http.Handler { return tk.handler(tk.Versions, true) }
+
+// SessionHandler serves the same tools on 2025-11-25 with MCP sessions: initialize
+// assigns an Mcp-Session-Id that every later request must carry.
+func (tk *Tickets) SessionHandler() http.Handler {
+	return tk.handler([]string{"2025-11-25"}, false)
+}
+
+func (tk *Tickets) handler(versions []string, stateless bool) http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "tickets", Version: "0.0.1"},
-		&mcp.ServerOptions{SupportedProtocolVersions: tk.Versions})
+		&mcp.ServerOptions{SupportedProtocolVersions: versions})
 	reply := func(verb string) mcp.ToolHandlerFor[TicketArgs, any] {
 		return func(_ context.Context, req *mcp.CallToolRequest, in TicketArgs) (*mcp.CallToolResult, any, error) {
 			who := tk.whoIs(req.Extra.Header.Get("Authorization"))
 			tk.mu.Lock()
 			tk.calls = append(tk.calls, who)
+			tk.sessions = append(tk.sessions, req.Extra.Header.Get("Mcp-Session-Id"))
 			tk.mu.Unlock()
 			text := fmt.Sprintf("authenticated as %s: %s in %s", who, verb, in.Project)
 			if in.Project == "" {
@@ -72,7 +82,7 @@ func (tk *Tickets) Handler() http.Handler {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 		})
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+		&mcp.StreamableHTTPOptions{Stateless: stateless, JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tk.mu.Lock()
 		tk.seen = append(tk.seen, r.Header.Clone())
@@ -102,6 +112,13 @@ func (tk *Tickets) Calls() []string {
 	tk.mu.Lock()
 	defer tk.mu.Unlock()
 	return append([]string(nil), tk.calls...)
+}
+
+// Sessions reports the MCP session each tool call came on, in order.
+func (tk *Tickets) Sessions() []string {
+	tk.mu.Lock()
+	defer tk.mu.Unlock()
+	return append([]string(nil), tk.sessions...)
 }
 
 // SetToken changes the token the server accepts, as a rotation would.

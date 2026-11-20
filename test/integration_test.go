@@ -96,16 +96,20 @@ func start(t *testing.T, ticketVersions []string) *env {
 	t.Helper()
 	e := &env{idp: fakes.NewIdP(), vault: fakes.NewVault(),
 		tickets: &fakes.Tickets{Token: "svc-secret-1", Identity: "svc-tickets", Versions: ticketVersions,
-			Users: map[string]string{"Bearer carol-own-token": "carol"}}}
+			Users: map[string]string{"Bearer carol-own-token": "carol", "Bearer erin-own-token": "erin"}}}
 	t.Cleanup(e.idp.Server.Close)
 	t.Cleanup(e.vault.Server.Close)
 	e.vault.Put("secret/data/mcp/tickets", map[string]any{"token": "svc-secret-1"})
 	// A dynamic secret, leased as uBixVault's database engine leases them.
 	e.vault.PutDynamic("secret/data/mcp/stdio", map[string]any{"token": "stdio-secret-1"}, 3600, false)
 	e.vault.Put("secret/data/mcp/mine/carol@example.com", map[string]any{"token": "carol-own-token"})
+	e.vault.Put("secret/data/mcp/mine/erin@example.com", map[string]any{"token": "erin-own-token"})
 	e.vault.Put("secret/data/mcp/shared@example.com", map[string]any{"token": "svc-secret-1"})
 	up := httptest.NewServer(e.tickets.Handler())
 	t.Cleanup(up.Close)
+	// The per-user upstream keeps MCP sessions, as many 2025-11-25 servers do.
+	mine := httptest.NewServer(e.tickets.SessionHandler())
+	t.Cleanup(mine.Close)
 
 	dir := t.TempDir()
 	write := func(name, s string) string {
@@ -145,7 +149,7 @@ upstreams:
     credential: { path: secret/data/mcp/stdio, field: token, env: STDIO_TOKEN }
 audit: { sink: file, path: %s, chain_key_file: %s }
 `, e.url, e.idp.Issuer, e.idp.JWKSURL(), e.vault.Server.URL, write("role", e.vault.RoleID),
-		write("secret", e.vault.SecretID), up.URL, up.URL, exe, stdioEnv, e.audit, write("chain", chainKey)) + policyYAML
+		write("secret", e.vault.SecretID), up.URL, mine.URL, exe, stdioEnv, e.audit, write("chain", chainKey)) + policyYAML
 	cfg, err := config.Parse([]byte(cfgYAML))
 	if err != nil {
 		t.Fatal(err)
@@ -552,9 +556,16 @@ func TestClientRequestsMixed(t *testing.T) {
 func TestPerUserCredentials(t *testing.T) {
 	e := start(t, nil)
 	args := map[string]any{"project": "myorg/web"}
-	carol := e.connect(t, e.token("carol", "personal"), "")
-	if text, isErr := call(t, carol, "mine__ticket_list", args); isErr || !strings.HasPrefix(text, "authenticated as carol:") {
-		t.Errorf("carol: %q", text)
+	// carol and erin call on the one MCP session the gateway opened with the catalog
+	// credential; each call carries the caller's own token.
+	for _, user := range []string{"carol", "erin"} {
+		s := e.connect(t, e.token(user, "personal"), "")
+		if text, isErr := call(t, s, "mine__ticket_list", args); isErr || !strings.HasPrefix(text, "authenticated as "+user+":") {
+			t.Errorf("%s: %q", user, text)
+		}
+	}
+	if s := e.tickets.Sessions(); len(s) != 2 || s[0] == "" || s[0] != s[1] {
+		t.Errorf("sessions = %q, want one shared session", s)
 	}
 	// dave has no secret of his own; "../shared" would reach another secret if the
 	// user name were put in the path unchecked.
@@ -564,14 +575,22 @@ func TestPerUserCredentials(t *testing.T) {
 			t.Errorf("%s: %q", user, text)
 		}
 	}
-	if got := e.tickets.Calls(); !slices.Equal(got, []string{"carol"}) {
-		t.Errorf("the upstream ran calls as %v, want only carol's", got)
+	// With Vault down, frank's call fails as an outage, not as a refusal.
+	e.vault.SetDown(true)
+	frank := e.connect(t, e.token("frank", "personal"), "")
+	if _, isErr := call(t, frank, "mine__ticket_list", args); !isErr {
+		t.Error("frank: the call should fail while Vault is down")
+	}
+	e.vault.SetDown(false)
+	if got := e.tickets.Calls(); !slices.Equal(got, []string{"carol", "erin"}) {
+		t.Errorf("the upstream ran calls as %v, want only carol's and erin's", got)
 	}
 	var got []string
 	for _, r := range readAudit(t, e.audit) {
 		got = append(got, r.Status+"/"+r.Reason)
 	}
-	want := []string{"ok/", "denied/credential_unavailable", "denied/credential_unavailable"}
+	want := []string{"ok/", "ok/", "denied/credential_unavailable", "denied/credential_unavailable",
+		"upstream_error/credential_unavailable"}
 	if !slices.Equal(got, want) {
 		t.Errorf("audit = %v, want %v", got, want)
 	}

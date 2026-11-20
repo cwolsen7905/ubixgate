@@ -80,7 +80,11 @@ func (c *Client) do(ctx context.Context, method, path, token string, body any) (
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&vr)
 	if resp.StatusCode >= 300 {
 		// Vault's error strings name paths, never secret values, so they are safe to log.
-		return nil, fmt.Errorf("vault %s %s: HTTP %d %s", method, path, resp.StatusCode, strings.Join(vr.Errors, "; "))
+		err := fmt.Errorf("vault %s %s: HTTP %d %s", method, path, resp.StatusCode, strings.Join(vr.Errors, "; "))
+		if resp.StatusCode == http.StatusNotFound {
+			err = fmt.Errorf("%w: %w", ErrNoSecret, err)
+		}
+		return nil, err
 	}
 	return &vr, nil
 }
@@ -239,6 +243,11 @@ func readFile(path string) (string, error) {
 // exists. The audit reason for it is "credential_unavailable".
 var ErrUnavailable = errors.New("credential_unavailable")
 
+// ErrNoSecret means Vault answered and has no usable secret at the path: nothing there,
+// or no value in the configured field. It is an ErrUnavailable. Vault being down,
+// sealed or refusing the gateway's token is not an ErrNoSecret.
+var ErrNoSecret = fmt.Errorf("%w: no secret", ErrUnavailable)
+
 // Reader is what the cache needs from a Client.
 type Reader interface {
 	Read(ctx context.Context, path string) (Secret, error)
@@ -354,6 +363,26 @@ func (c *Cache) Close() {
 	}
 }
 
+// Sweep forgets values that have expired or failed, revoking their leases after Grace
+// like any dropped value. Without it, a value nobody asks for again (a per-user secret
+// whose user has stopped calling) would keep its lease until shutdown, and its entry
+// for good.
+func (c *Cache) Sweep() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	for k, e := range c.entries {
+		select {
+		case <-e.ready:
+			if e.err != nil || !now.Before(e.expires) {
+				c.dropped(e)
+				delete(c.entries, k)
+			}
+		default: // a read is in flight
+		}
+	}
+}
+
 // Get returns the credential's value, formatted, reading Vault on a miss.
 func (c *Cache) Get(ctx context.Context, cr *config.Credential) (string, error) {
 	key := cr.Path + "#" + cr.Field
@@ -399,7 +428,7 @@ func (c *Cache) read(ctx context.Context, cr *config.Credential) (string, time.T
 		if s.LeaseID != "" {
 			go c.revoke(s.LeaseID) // issued but unusable
 		}
-		return "", time.Time{}, "", fmt.Errorf("%w: field %q missing at %s", ErrUnavailable, cr.Field, cr.Path)
+		return "", time.Time{}, "", fmt.Errorf("%w: field %q missing at %s", ErrNoSecret, cr.Field, cr.Path)
 	}
 	ttl := cr.TTL
 	if s.Lease > 0 && s.Lease < ttl {

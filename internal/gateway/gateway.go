@@ -285,7 +285,9 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 		return finish(errorResult("upstream timed out"))
 	case errors.Is(err, secrets.ErrUnavailable):
 		rec.Status, rec.Reason = audit.StatusUpstreamError, "credential_unavailable"
-		if r.up.PerUser() { // this caller has no credential of their own: a refusal
+		if r.up.PerUser() && errors.Is(err, secrets.ErrNoSecret) {
+			// Vault answered: this caller has no credential of their own, a refusal. Vault
+			// being unreachable stays an upstream error, so an outage is not logged as one.
 			rec.Status = audit.StatusDenied
 		}
 		g.opts.Log.Warn("credential unavailable", "server", server, "err", err, "request_id", rec.RequestID)

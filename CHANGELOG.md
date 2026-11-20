@@ -23,7 +23,8 @@ interface is listed under **Interface changes** in the release that makes it.
   Lines deleted from the end are not detectable from the file alone.
 - Unused dynamic-secret leases are revoked: when the cache replaces or drops a
   credential (after a grace period of the longest upstream timeout, so calls already
-  sent can finish), when a stdio process holding one stops, at shutdown, and at once
+  sent can finish; an expired credential nobody asks for again, such as a per-user one
+  whose user stopped calling, is dropped within a minute), when a stdio process holding one stops, at shutdown, and at once
   when a lease is issued without the configured field.
 - OpenTelemetry tracing, off by default: a `tracing` block exports spans over OTLP/HTTP
   for the request, auth, the call, policy, credential and upstream steps, continues the
@@ -35,7 +36,9 @@ interface is listed under **Interface changes** in the release that makes it.
 - Per-user upstream credentials: an HTTP upstream's `credential.path` may contain
   `{user}`, so each call uses the caller's own secret and the upstream sees the person.
   A caller without one is refused (status `denied`, reason `credential_unavailable`),
-  never given the shared credential. `catalog_path` is the shared secret used only to
+  never given the shared credential. Vault being unreachable is an `upstream_error`
+  with the same reason, not a refusal. An upstream with MCP sessions gets one session,
+  opened with the shared secret, carrying every user's calls with their own tokens. `catalog_path` is the shared secret used only to
   connect and list tools.
 
 ### Changed

@@ -279,7 +279,7 @@ func credFor(ctx context.Context, cr *config.Credential) (*config.Credential, er
 	case !isCall:
 		c.Path = cr.CatalogPath
 	case !userRE.MatchString(user) || user == "." || user == "..":
-		return nil, fmt.Errorf("%w: user %q cannot name a credential path", secrets.ErrUnavailable, user)
+		return nil, fmt.Errorf("%w: user %q cannot name a credential path", secrets.ErrNoSecret, user)
 	default:
 		c.Path = strings.ReplaceAll(cr.Path, "{user}", user)
 	}
