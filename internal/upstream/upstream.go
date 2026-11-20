@@ -38,6 +38,7 @@ type Upstream struct {
 	tools    []*mcp.Tool
 	inflight int
 	credExp  time.Time // stdio: when the credential the process was started with expires
+	lease    string    // stdio: the dynamic secret lease the process holds, released when it stops
 }
 
 // New returns an unconnected upstream. onChange is called whenever its catalog changes.
@@ -134,9 +135,11 @@ func (u *Upstream) ensure(ctx context.Context) (*mcp.ClientSession, error) {
 	if s != nil && u.cfg.Transport == "stdio" && u.cfg.Credential != nil &&
 		time.Now().After(u.credExp) && u.inflight == 0 {
 		u.log.Info("restarting stdio upstream: its credential expired")
-		u.session = nil
+		held := u.lease
+		u.session, u.lease = nil, ""
 		u.mu.Unlock()
 		_ = s.Close()
+		u.creds.Release(held)
 		u.mu.Lock()
 		s = nil
 	}
@@ -145,7 +148,7 @@ func (u *Upstream) ensure(ctx context.Context) (*mcp.ClientSession, error) {
 		return s, nil
 	}
 
-	t, credExp, err := u.transport(ctx)
+	t, credExp, lease, err := u.transport(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -168,24 +171,25 @@ func (u *Upstream) ensure(ctx context.Context) (*mcp.ClientSession, error) {
 	})
 	s, err = client.Connect(ctx, t, nil)
 	if err != nil {
+		u.creds.Release(lease)
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.session != nil { // another caller connected first
-		go func() { _ = s.Close() }()
+		go func() { _ = s.Close(); u.creds.Release(lease) }()
 		return u.session, nil
 	}
-	u.session, u.credExp = s, credExp
+	u.session, u.credExp, u.lease = s, credExp, lease
 	u.log.Info("connected", "protocol", protocolOf(s))
 	return s, nil
 }
 
-func (u *Upstream) transport(ctx context.Context) (mcp.Transport, time.Time, error) {
+func (u *Upstream) transport(ctx context.Context) (mcp.Transport, time.Time, string, error) {
 	switch u.cfg.Transport {
 	case "http":
 		hc := &http.Client{Transport: &credTransport{base: http.DefaultTransport, creds: u.creds, cred: u.cfg.Credential}}
-		return &mcp.StreamableClientTransport{Endpoint: u.cfg.URL, HTTPClient: hc, DisableStandaloneSSE: true}, time.Time{}, nil
+		return &mcp.StreamableClientTransport{Endpoint: u.cfg.URL, HTTPClient: hc, DisableStandaloneSSE: true}, time.Time{}, "", nil
 	case "stdio":
 		cmd := exec.Command(u.cfg.Command[0], u.cfg.Command[1:]...)
 		// The child gets PATH and HOME, its configured env and its credential, never the
@@ -195,38 +199,43 @@ func (u *Upstream) transport(ctx context.Context) (mcp.Transport, time.Time, err
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 		var exp time.Time
+		var lease string
 		if cr := u.cfg.Credential; cr != nil {
 			v, err := u.creds.Get(ctx, cr)
 			if err != nil {
-				return nil, exp, err
+				return nil, exp, "", err
 			}
 			cmd.Env = append(cmd.Env, cr.Env+"="+v)
-			exp = u.creds.Expiry(cr)
+			exp, lease = u.creds.Expiry(cr), u.creds.Hold(cr)
 		}
 		cmd.Stderr = &logWriter{log: u.log}
-		return &mcp.CommandTransport{Command: cmd}, exp, nil
+		return &mcp.CommandTransport{Command: cmd}, exp, lease, nil
 	}
-	return nil, time.Time{}, fmt.Errorf("unknown transport %q", u.cfg.Transport)
+	return nil, time.Time{}, "", fmt.Errorf("unknown transport %q", u.cfg.Transport)
 }
 
 // drop forgets a broken session so the next use reconnects.
 func (u *Upstream) drop(s *mcp.ClientSession) {
 	u.mu.Lock()
+	held := ""
 	if u.session == s {
-		u.session = nil
+		u.session, held, u.lease = nil, u.lease, ""
 	}
 	u.mu.Unlock()
 	_ = s.Close()
+	u.creds.Release(held)
 }
 
 // Close disconnects.
 func (u *Upstream) Close() error {
 	u.mu.Lock()
-	s := u.session
-	u.session = nil
+	s, held := u.session, u.lease
+	u.session, u.lease = nil, ""
 	u.mu.Unlock()
 	if s != nil {
-		return s.Close()
+		err := s.Close()
+		u.creds.Release(held)
+		return err
 	}
 	return nil
 }

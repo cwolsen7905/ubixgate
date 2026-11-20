@@ -344,7 +344,8 @@ docker build -t ubixgate .                   # distroless, non-root; or use the 
 | `/metrics` | Prometheus: `ubixgate_tool_calls_total{server,decision,status}`, `ubixgate_tool_call_duration_seconds`, `ubixgate_auth_failures_total`, `ubixgate_upstream_up` |
 
 Logs are JSON on stderr (`log/slog`). Grant the gateway's Vault identity read access to
-exactly the configured credential paths, nothing else.
+exactly the configured credential paths, plus `update` on `sys/leases/revoke` if any of
+them is a dynamic secret, nothing else.
 
 In Kubernetes, use the Helm chart in [deploy/charts/ubixgate](deploy/charts/ubixgate/README.md).
 It takes the config above as a value, exposes only the MCP endpoint and its metadata on
@@ -408,7 +409,7 @@ policy allows can still do everything that call can do.
 | Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
 | Upstream credentials | One service credential per upstream, or, for HTTP upstreams, one per user read from a `{user}` path, which an administrator stores in Vault for each person. With a service credential, upstream logs see the gateway and the audit log is the per-user record. Exchanging the caller's token at the identity provider for one per upstream (RFC 8693) is not built. stdio upstreams take only a service credential |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
-| Leases | Dynamic secrets are read and their lease caps the cache, but leases are not revoked when unused; keep their TTLs short |
+| Leases | A dynamic secret's lease caps the cache, read from the envelope (HashiCorp Vault) or from inside `data` (uBixVault). A lease the gateway stops using is revoked: after the longest upstream timeout when the cache replaces or drops it, when a stdio process holding it stops, and at shutdown. A revoke that fails is logged and the lease expires on its own. A gateway that is killed revokes nothing |
 | Requests to the client | Elicitation, sampling and roots pass through only between a 2026-07-28 client and a 2026-07-28 upstream, when a rule allows them. Clients and upstreams on 2025-11-25 are refused them. Without a shared `request_state_key_file`, a retry must reach the same replica |
 | Identity | OIDC JWTs. No SAML or SCIM |
 | Not included | Admin UI, multi-tenancy, response filtering, plugins, rate limiting beyond the per-user limit |

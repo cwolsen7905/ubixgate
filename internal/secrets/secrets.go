@@ -46,6 +46,7 @@ func New(cfg config.Vault, httpc *http.Client, log *slog.Logger) *Client {
 // vaultResponse is the envelope every Vault endpoint uses.
 type vaultResponse struct {
 	Data          map[string]any `json:"data"`
+	LeaseID       string         `json:"lease_id"`
 	LeaseDuration int            `json:"lease_duration"`
 	Auth          *struct {
 		ClientToken   string `json:"client_token"`
@@ -148,19 +149,40 @@ func (c *Client) currentToken() string {
 	return c.token
 }
 
-// Read returns a secret's data and lease. KV v2's nested data.data is unwrapped.
-func (c *Client) Read(ctx context.Context, path string) (map[string]any, time.Duration, error) {
+// Secret is what a read returns: the data, and for a dynamic secret its lease.
+type Secret struct {
+	Data    map[string]any
+	Lease   time.Duration
+	LeaseID string
+}
+
+// Read returns a secret's data and lease. KV v2's nested data.data is unwrapped. The
+// lease is read from the envelope, as HashiCorp Vault sends it, or from inside data, as
+// uBixVault's database engine does.
+func (c *Client) Read(ctx context.Context, path string) (Secret, error) {
 	vr, err := c.do(ctx, http.MethodGet, path, c.currentToken(), nil)
 	if err != nil {
-		return nil, 0, err
+		return Secret{}, err
 	}
-	data := vr.Data
-	if inner, ok := data["data"].(map[string]any); ok {
-		if _, hasMeta := data["metadata"]; hasMeta {
-			data = inner
+	s := Secret{Data: vr.Data, Lease: time.Duration(vr.LeaseDuration) * time.Second, LeaseID: vr.LeaseID}
+	if inner, ok := s.Data["data"].(map[string]any); ok {
+		if _, hasMeta := s.Data["metadata"]; hasMeta {
+			s.Data = inner
 		}
 	}
-	return data, time.Duration(vr.LeaseDuration) * time.Second, nil
+	if id, ok := s.Data["lease_id"].(string); ok && s.LeaseID == "" {
+		s.LeaseID = id
+	}
+	if d, ok := s.Data["lease_duration"].(float64); ok && s.Lease == 0 {
+		s.Lease = time.Duration(d) * time.Second
+	}
+	return s, nil
+}
+
+// Revoke ends a dynamic secret's lease, so the credential stops working at once.
+func (c *Client) Revoke(ctx context.Context, leaseID string) error {
+	_, err := c.do(ctx, http.MethodPut, "sys/leases/revoke", c.currentToken(), map[string]string{"lease_id": leaseID})
+	return err
 }
 
 // Healthy reports whether Vault answers its health endpoint as initialised and unsealed.
@@ -219,17 +241,26 @@ var ErrUnavailable = errors.New("credential_unavailable")
 
 // Reader is what the cache needs from a Client.
 type Reader interface {
-	Read(ctx context.Context, path string) (map[string]any, time.Duration, error)
+	Read(ctx context.Context, path string) (Secret, error)
+	Revoke(ctx context.Context, leaseID string) error
 }
 
 // Cache holds one value per credential for min(ttl, lease). Concurrent misses for the
 // same credential share one Vault read. Values are never served past their expiry.
+//
+// A dynamic secret's lease is revoked once the cache drops it (expired and read again,
+// invalidated, or the cache closed), after Grace, so calls already sent with it can
+// finish. A credential a stdio process holds in its environment is revoked by its
+// upstream when the process stops instead (Hold, Release).
 type Cache struct {
-	r   Reader
-	now func() time.Time
+	r     Reader
+	now   func() time.Time
+	Grace time.Duration
+	Log   *slog.Logger
 
 	mu      sync.Mutex
 	entries map[string]*entry
+	held    map[string]int // lease ID to the number of processes holding it
 }
 
 type entry struct {
@@ -237,11 +268,90 @@ type entry struct {
 	value   string
 	err     error
 	expires time.Time
+	leaseID string
 }
 
 // NewCache returns an empty cache over r.
 func NewCache(r Reader) *Cache {
-	return &Cache{r: r, now: time.Now, entries: map[string]*entry{}}
+	return &Cache{r: r, now: time.Now, Grace: time.Minute, Log: slog.New(slog.DiscardHandler),
+		entries: map[string]*entry{}, held: map[string]int{}}
+}
+
+// lease is an entry's lease ID once its read has finished. Called with c.mu held.
+func lease(e *entry) string {
+	select {
+	case <-e.ready:
+		return e.leaseID
+	default:
+		return ""
+	}
+}
+
+// dropped revokes a replaced entry's lease after Grace, unless a process holds it.
+// Called with c.mu held.
+func (c *Cache) dropped(e *entry) {
+	if e == nil || e.leaseID == "" || c.held[e.leaseID] > 0 {
+		return
+	}
+	id := e.leaseID
+	e.leaseID = ""
+	time.AfterFunc(c.Grace, func() { c.revoke(id) })
+}
+
+func (c *Cache) revoke(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.r.Revoke(ctx, id); err != nil {
+		c.Log.Warn("could not revoke an unused lease; it expires on its own", "err", err)
+	}
+}
+
+// Hold marks the current lease of cr as in use by a process, and returns it ("" for a
+// secret without a lease). Release it when the process stops.
+func (c *Cache) Hold(cr *config.Credential) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.entries[cr.Path+"#"+cr.Field]
+	if e == nil || lease(e) == "" {
+		return ""
+	}
+	c.held[e.leaseID]++
+	return e.leaseID
+}
+
+// Release ends a Hold. The last release of a lease the cache no longer serves revokes it.
+func (c *Cache) Release(id string) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held[id]--; c.held[id] > 0 {
+		return
+	}
+	delete(c.held, id)
+	for _, e := range c.entries {
+		if lease(e) == id {
+			return // still the current value: revoked when the cache drops it
+		}
+	}
+	go c.revoke(id)
+}
+
+// Close revokes every lease the cache still holds that no process holds, at once.
+func (c *Cache) Close() {
+	c.mu.Lock()
+	var ids []string
+	for k, e := range c.entries {
+		if id := lease(e); id != "" && c.held[id] == 0 {
+			ids = append(ids, id)
+		}
+		delete(c.entries, k)
+	}
+	c.mu.Unlock()
+	for _, id := range ids {
+		c.revoke(id)
+	}
 }
 
 // Get returns the credential's value, formatted, reading Vault on a miss.
@@ -253,6 +363,7 @@ func (c *Cache) Get(ctx context.Context, cr *config.Credential) (string, error) 
 		select {
 		case <-e.ready:
 			if e.err != nil || !c.now().Before(e.expires) {
+				c.dropped(e)
 				e = nil // failed or expired: read again
 			}
 		default: // a read is in flight; wait for it below
@@ -262,7 +373,7 @@ func (c *Cache) Get(ctx context.Context, cr *config.Credential) (string, error) 
 		e = &entry{ready: make(chan struct{})}
 		c.entries[key] = e
 		c.mu.Unlock()
-		e.value, e.expires, e.err = c.read(ctx, cr)
+		e.value, e.expires, e.leaseID, e.err = c.read(ctx, cr)
 		close(e.ready)
 	} else {
 		c.mu.Unlock()
@@ -278,27 +389,38 @@ func (c *Cache) Get(ctx context.Context, cr *config.Credential) (string, error) 
 	return strings.ReplaceAll(cr.Format, "{value}", e.value), nil
 }
 
-func (c *Cache) read(ctx context.Context, cr *config.Credential) (string, time.Time, error) {
-	data, lease, err := c.r.Read(ctx, cr.Path)
+func (c *Cache) read(ctx context.Context, cr *config.Credential) (string, time.Time, string, error) {
+	s, err := c.r.Read(ctx, cr.Path)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return "", time.Time{}, "", fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	v, ok := data[cr.Field].(string)
+	v, ok := s.Data[cr.Field].(string)
 	if !ok || v == "" {
-		return "", time.Time{}, fmt.Errorf("%w: field %q missing at %s", ErrUnavailable, cr.Field, cr.Path)
+		if s.LeaseID != "" {
+			go c.revoke(s.LeaseID) // issued but unusable
+		}
+		return "", time.Time{}, "", fmt.Errorf("%w: field %q missing at %s", ErrUnavailable, cr.Field, cr.Path)
 	}
 	ttl := cr.TTL
-	if lease > 0 && lease < ttl {
-		ttl = lease
+	if s.Lease > 0 && s.Lease < ttl {
+		ttl = s.Lease
 	}
-	return v, c.now().Add(ttl), nil
+	return v, c.now().Add(ttl), s.LeaseID, nil
 }
 
 // Invalidate drops a cached credential, for example after an upstream answered 401.
 func (c *Cache) Invalidate(cr *config.Credential) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, cr.Path+"#"+cr.Field)
+	key := cr.Path + "#" + cr.Field
+	if e := c.entries[key]; e != nil {
+		select {
+		case <-e.ready:
+			c.dropped(e)
+		default:
+		}
+	}
+	delete(c.entries, key)
 }
 
 // Expiry reports when the cached value for cr expires, or the zero time if none.

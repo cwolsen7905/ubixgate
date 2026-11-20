@@ -56,6 +56,7 @@ type Runtime struct {
 	Handler http.Handler
 	cfg     *config.Config
 	vault   *secrets.Client
+	creds   *secrets.Cache
 	ups     []*upstream.Upstream
 	sink    *audit.Sink
 	metrics *ops.Metrics
@@ -97,6 +98,11 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 			return nil, fmt.Errorf("vault login: %w", err)
 		}
 		creds = secrets.NewCache(rt.vault)
+		creds.Log = log
+		for _, u := range cfg.Upstreams { // let calls sent with a replaced credential finish
+			creds.Grace = max(creds.Grace, u.Timeout)
+		}
+		rt.creds = creds
 	}
 
 	pol, err := Policy(cfg)
@@ -206,6 +212,9 @@ func (rt *Runtime) Close() error {
 	var errs []error
 	for _, up := range rt.ups {
 		errs = append(errs, up.Close())
+	}
+	if rt.creds != nil {
+		rt.creds.Close() // revoke the leases nothing uses any more
 	}
 	errs = append(errs, rt.sink.Close())
 	return errors.Join(errs...)

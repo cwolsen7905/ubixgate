@@ -3,10 +3,13 @@ package secrets
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,9 +43,9 @@ func TestLoginAndRead(t *testing.T) {
 	defer v.Server.Close()
 	v.Put("secret/data/mcp/tickets", map[string]any{"token": "svc-123"})
 	c := login(t, v)
-	data, _, err := c.Read(context.Background(), "secret/data/mcp/tickets")
-	if err != nil || data["token"] != "svc-123" {
-		t.Fatalf("data=%v err=%v (KV v2 data.data must be unwrapped)", data, err)
+	s, err := c.Read(context.Background(), "secret/data/mcp/tickets")
+	if err != nil || s.Data["token"] != "svc-123" || s.LeaseID != "" {
+		t.Fatalf("secret=%+v err=%v (KV v2 data.data must be unwrapped)", s, err)
 	}
 	if err := c.Healthy(context.Background()); err != nil {
 		t.Error(err)
@@ -123,14 +126,133 @@ func TestCacheInvalidateAndMissingField(t *testing.T) {
 	}
 }
 
-type leaseReader struct{ lease time.Duration }
+// leaseReader issues a new lease per read and records revocations.
+type leaseReader struct {
+	lease   time.Duration
+	field   string
+	mu      sync.Mutex
+	n       int
+	revoked []string
+}
 
-func (l leaseReader) Read(context.Context, string) (map[string]any, time.Duration, error) {
-	return map[string]any{"token": "x"}, l.lease, nil
+func (l *leaseReader) Read(context.Context, string) (Secret, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.n++
+	f := l.field
+	if f == "" {
+		f = "token"
+	}
+	return Secret{Data: map[string]any{f: "x"}, Lease: l.lease, LeaseID: fmt.Sprintf("l%d", l.n)}, nil
+}
+
+func (l *leaseReader) Revoke(_ context.Context, id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.revoked = append(l.revoked, id)
+	return nil
+}
+
+// revokedSoon waits briefly for revocations made after the cache's grace period.
+func (l *leaseReader) revokedSoon(want ...string) []string {
+	for i := 0; i < 100; i++ {
+		l.mu.Lock()
+		got := append([]string(nil), l.revoked...)
+		l.mu.Unlock()
+		if len(got) >= len(want) {
+			slices.Sort(got)
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.revoked...)
+}
+
+func TestLeaseRevocation(t *testing.T) {
+	r := &leaseReader{lease: time.Hour}
+	cache := NewCache(r)
+	cache.Grace = 0
+	now := time.Now()
+	cache.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	_, _ = cache.Get(ctx, cred) // l1
+	cache.Invalidate(cred)      // dropped: revoked
+	if got := r.revokedSoon("l1"); !slices.Equal(got, []string{"l1"}) {
+		t.Fatalf("after invalidate: %v", got)
+	}
+	_, _ = cache.Get(ctx, cred) // l2
+	now = now.Add(2 * time.Minute)
+	_, _ = cache.Get(ctx, cred) // l2 expired and replaced by l3: l2 revoked
+	if got := r.revokedSoon("l1", "l2"); !slices.Equal(got, []string{"l1", "l2"}) {
+		t.Fatalf("after expiry: %v", got)
+	}
+
+	// A stdio process holds l3: replacing it in the cache does not revoke it; the
+	// process stopping does. Releasing the current value does not revoke it either.
+	held := cache.Hold(cred)
+	now = now.Add(2 * time.Minute)
+	_, _ = cache.Get(ctx, cred) // l4
+	time.Sleep(20 * time.Millisecond)
+	if got := r.revokedSoon(); len(got) != 2 {
+		t.Fatalf("a held lease was revoked: %v", got)
+	}
+	cache.Release(held)
+	if got := r.revokedSoon("l1", "l2", "l3"); !slices.Equal(got, []string{"l1", "l2", "l3"}) {
+		t.Fatalf("after release: %v", got)
+	}
+	cache.Release(cache.Hold(cred)) // l4 is still served: kept
+	time.Sleep(20 * time.Millisecond)
+	cache.Close() // shutdown: l4 revoked
+	if got := r.revokedSoon("l1", "l2", "l3", "l4"); !slices.Equal(got, []string{"l1", "l2", "l3", "l4"}) {
+		t.Fatalf("after close: %v", got)
+	}
+}
+
+func TestUnusableLeaseRevoked(t *testing.T) {
+	r := &leaseReader{lease: time.Hour, field: "other"}
+	cache := NewCache(r)
+	if _, err := cache.Get(context.Background(), cred); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := r.revokedSoon("l1"); !slices.Equal(got, []string{"l1"}) {
+		t.Errorf("a lease issued without the field was not revoked: %v", got)
+	}
+}
+
+// Both envelopes carry a lease: HashiCorp Vault's top level, and uBixVault's database
+// engine, which puts lease_id and lease_duration inside data.
+func TestReadLeaseShapes(t *testing.T) {
+	v := fakes.NewVault()
+	defer v.Server.Close()
+	v.PutDynamic("database/creds/ubix", map[string]any{"password": "p1"}, 30, false)
+	v.PutDynamic("hcv/creds/app", map[string]any{"password": "p2"}, 40, true)
+	c := login(t, v)
+	for path, want := range map[string]time.Duration{"database/creds/ubix": 30 * time.Second, "hcv/creds/app": 40 * time.Second} {
+		s, err := c.Read(context.Background(), path)
+		if err != nil || s.Lease != want || !strings.HasPrefix(s.LeaseID, "lease-") || s.Data["password"] == nil {
+			t.Errorf("%s: %+v, %v", path, s, err)
+		}
+	}
+	if err := c.Revoke(context.Background(), "lease-1"); err != nil || !slices.Equal(v.Revoked(), []string{"lease-1"}) {
+		t.Errorf("revoke: %v %v", err, v.Revoked())
+	}
+	// The lease caps the cache against uBixVault too.
+	cache := NewCache(c)
+	now := time.Now()
+	cache.now = func() time.Time { return now }
+	if _, err := cache.Get(context.Background(), &config.Credential{Path: "database/creds/ubix", Field: "password", Format: "{value}", TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.Expiry(&config.Credential{Path: "database/creds/ubix", Field: "password"}).Sub(now); got != 30*time.Second {
+		t.Errorf("expiry in %v, want the 30s lease", got)
+	}
 }
 
 func TestLeaseCapsTTL(t *testing.T) {
-	cache := NewCache(leaseReader{lease: 10 * time.Second})
+	cache := NewCache(&leaseReader{lease: 10 * time.Second})
 	now := time.Now()
 	cache.now = func() time.Time { return now }
 	_, _ = cache.Get(context.Background(), cred)

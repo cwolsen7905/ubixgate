@@ -51,6 +51,7 @@ type env struct {
 	tickets *fakes.Tickets
 	audit   string
 	cfg     *config.Config
+	rt      *gateway.Runtime
 }
 
 const policyYAML = `
@@ -94,7 +95,8 @@ func start(t *testing.T, ticketVersions []string) *env {
 	t.Cleanup(e.idp.Server.Close)
 	t.Cleanup(e.vault.Server.Close)
 	e.vault.Put("secret/data/mcp/tickets", map[string]any{"token": "svc-secret-1"})
-	e.vault.Put("secret/data/mcp/stdio", map[string]any{"token": "stdio-secret-1"})
+	// A dynamic secret, leased as uBixVault's database engine leases them.
+	e.vault.PutDynamic("secret/data/mcp/stdio", map[string]any{"token": "stdio-secret-1"}, 3600, false)
 	e.vault.Put("secret/data/mcp/mine/carol@example.com", map[string]any{"token": "carol-own-token"})
 	e.vault.Put("secret/data/mcp/shared@example.com", map[string]any{"token": "svc-secret-1"})
 	up := httptest.NewServer(e.tickets.Handler())
@@ -151,6 +153,7 @@ audit: { sink: file, path: %s, chain_key_file: %s }
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
+	e.rt = rt
 	rt.Start(ctx)
 	gw.Config.Handler = rt.Handler
 	gw.Start()
@@ -601,5 +604,22 @@ func TestExplainMatchesGateway(t *testing.T) {
 		if dec.Rule != recs[i].Rule || string(dec.Effect) != recs[i].Decision {
 			t.Errorf("%s: explain says %s by %s, the gateway %s by %s", c.tool, dec.Effect, dec.Rule, recs[i].Decision, recs[i].Rule)
 		}
+	}
+}
+
+// A stdio process holds its dynamic secret's lease while it runs. When the gateway
+// stops, the process ends and the lease nothing uses any more is revoked.
+func TestLeaseRevokedAtShutdown(t *testing.T) {
+	e := start(t, nil)
+	alice := e.connect(t, e.token("alice", "developers"), "")
+	if text, _ := call(t, alice, "stdio__env_has", map[string]any{"name": "STDIO_TOKEN", "value": "stdio-secret-1"}); !strings.Contains(text, "match=true") {
+		t.Fatalf("stdio credential: %q", text)
+	}
+	if got := e.vault.Revoked(); len(got) != 0 {
+		t.Fatalf("revoked while in use: %v", got)
+	}
+	_ = e.rt.Close()
+	if got := e.vault.Revoked(); !slices.Equal(got, []string{"lease-1"}) {
+		t.Errorf("revoked at shutdown: %v, want [lease-1]", got)
 	}
 }

@@ -21,6 +21,10 @@ interface is listed under **Interface changes** in the release that makes it.
   HMAC chained over the one before, continued across restarts, and
   `ubixgate audit verify` names the first edited, removed, inserted or reordered line.
   Lines deleted from the end are not detectable from the file alone.
+- Unused dynamic-secret leases are revoked: when the cache replaces or drops a
+  credential (after a grace period of the longest upstream timeout, so calls already
+  sent can finish), when a stdio process holding one stops, at shutdown, and at once
+  when a lease is issued without the configured field.
 - `ubixgate policy explain`: the decision, deciding rule, what the caller is shown,
   whether the tool is listed and which arguments are logged, for a user, groups, client,
   tool and arguments, without a live call. It runs the same decision step as the gateway.
@@ -34,6 +38,12 @@ interface is listed under **Interface changes** in the release that makes it.
 
 - The README's demo transcript is now the Docker Compose demo's real output, as CI
   captures it, instead of the loopback runner's.
+
+### Fixed
+
+- A dynamic secret's lease now caps the credential cache against uBixVault, which sends
+  `lease_id` and `lease_duration` inside `data` rather than in the envelope. Before, the
+  configured TTL applied, so a lease shorter than it could be served after it expired.
 
 ### Interface changes
 
