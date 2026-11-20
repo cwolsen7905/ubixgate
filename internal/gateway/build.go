@@ -20,6 +20,25 @@ import (
 	"github.com/ubixsys/ubixgate/internal/upstream"
 )
 
+// loadStateKey reads the request state key, or makes one for this process when path is
+// empty, in which case a retry must reach the same replica.
+func loadStateKey(path string) ([]byte, error) {
+	if path == "" {
+		key := make([]byte, 32)
+		_, err := rand.Read(key)
+		return key, err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("request state key: %w", err)
+	}
+	key := []byte(strings.TrimSpace(string(b)))
+	if len(key) < 32 { // an empty key would let anyone forge sealed state
+		return nil, fmt.Errorf("request state key: %s holds %d bytes, need at least 32", path, len(key))
+	}
+	return key, nil
+}
+
 // Runtime is a gateway assembled from a config, with its background work.
 type Runtime struct {
 	Gateway *Gateway
@@ -91,15 +110,9 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 		red.HashKey = []byte(strings.TrimSpace(string(key)))
 	}
 
-	// Without a key file the key is per process, so a retry must reach the same replica.
-	stateKey := make([]byte, 32)
-	_, _ = rand.Read(stateKey)
-	if cfg.RequestStateKeyFile != "" {
-		key, err := os.ReadFile(cfg.RequestStateKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("request state key: %w", err)
-		}
-		stateKey = []byte(strings.TrimSpace(string(key)))
+	stateKey, err := loadStateKey(cfg.RequestStateKeyFile)
+	if err != nil {
+		return nil, err
 	}
 
 	var g *Gateway

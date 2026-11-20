@@ -227,12 +227,15 @@ none: an allow rule for a tool does not cover its requests.
       client_requests: [elicitation]   # any of: elicitation, sampling, roots
 ```
 
-The upstream's opaque request state is sealed with an HMAC to the user and the tool
-before it goes to the client, and expires after 10 minutes. A retry with state that is
-missing, altered, expired or another user's, or with answers to requests that were not
-asked, is denied by the built-in rule `invalid-request-state`. The key is generated at
-start unless `request_state_key_file` names one; with several replicas behind one URL,
-give them the same key file, or a retry that reaches another replica is refused.
+The upstream's opaque request state is sealed with an HMAC to the user, the tool and
+its arguments before it goes to the client, and expires after 10 minutes. A retry with
+state that is missing, altered, expired, another user's or another call's, or with
+answers to requests that were not asked, is denied by the built-in rule
+`invalid-request-state`. Within those 10 minutes the same user can send the same retry
+again, and the upstream sees a repeated retry; the gateway does not make a state single
+use. The key is generated at start unless `request_state_key_file` names a file of at
+least 32 bytes; with several replicas behind one URL, give them the same key file, or a
+retry that reaches another replica is refused.
 
 | Case | What happens |
 |---|---|

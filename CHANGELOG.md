@@ -13,8 +13,8 @@ interface is listed under **Interface changes** in the release that makes it.
 - Requests from an upstream to the caller's client (elicitation, sampling, roots) pass
   through to the calling client under MCP 2026-07-28, when a policy rule with
   `client_requests` allows that kind for that tool. Each is audited as its own record.
-  The upstream's request state is sealed to the user and tool, expires after 10 minutes,
-  and is refused for anyone else (`invalid-request-state`). Clients and upstreams on
+  The upstream's request state is sealed to the user, tool and arguments, expires after
+  10 minutes, and is refused for anyone else (`invalid-request-state`). Clients and upstreams on
   2025-11-25 are refused them. `request_state_key_file` shares the sealing key across
   replicas.
 

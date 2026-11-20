@@ -32,6 +32,7 @@ const stateTTL = 10 * time.Minute
 type sealedState struct {
 	User     string   `json:"u"`
 	Tool     string   `json:"t"`
+	Args     string   `json:"a"` // argsHash of the call's arguments
 	IDs      []string `json:"i"`
 	Upstream string   `json:"s"`
 	Expires  int64    `json:"e"`
@@ -42,14 +43,15 @@ func (g *Gateway) seal(st sealedState) string {
 	return base64.RawURLEncoding.EncodeToString(b) + "." + base64.RawURLEncoding.EncodeToString(g.mac(b))
 }
 
-// open checks a retry's state and answers, and returns the upstream's own state.
-func (g *Gateway) open(token, user, tool string, answers mcp.InputResponseMap) (string, bool) {
+// open checks a retry's state and answers, and returns the upstream's own state. Within
+// its expiry, a state can be used again by the same user for the same call.
+func (g *Gateway) open(token, user, tool, args string, answers mcp.InputResponseMap) (string, bool) {
 	body, sig, _ := strings.Cut(token, ".")
 	b, err1 := base64.RawURLEncoding.DecodeString(body)
 	m, err2 := base64.RawURLEncoding.DecodeString(sig)
 	var st sealedState
 	if err1 != nil || err2 != nil || !hmac.Equal(m, g.mac(b)) || json.Unmarshal(b, &st) != nil ||
-		st.User != user || st.Tool != tool || time.Now().Unix() > st.Expires {
+		st.User != user || st.Tool != tool || st.Args != args || time.Now().Unix() > st.Expires {
 		return "", false
 	}
 	for id := range answers {
@@ -58,6 +60,13 @@ func (g *Gateway) open(token, user, tool string, answers mcp.InputResponseMap) (
 		}
 	}
 	return st.Upstream, true
+}
+
+// argsHash identifies a call's arguments independent of key order and spacing.
+func argsHash(args map[string]any) string {
+	b, _ := json.Marshal(args) // map keys marshal sorted
+	sum := sha256.Sum256(b)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func (g *Gateway) mac(b []byte) []byte {
@@ -121,7 +130,7 @@ func (g *Gateway) needsInput(ctx context.Context, rec audit.Record, pr policy.Re
 	if !canAnswer {
 		return errorResult("the upstream needs input from the client, which requires MCP 2026-07-28"), ""
 	}
-	res.RequestState = g.seal(sealedState{User: pr.Principal.User, Tool: rec.Tool, IDs: ids,
+	res.RequestState = g.seal(sealedState{User: pr.Principal.User, Tool: rec.Tool, Args: argsHash(pr.Args), IDs: ids,
 		Upstream: res.RequestState, Expires: time.Now().Add(stateTTL).Unix()})
 	return res, ""
 }

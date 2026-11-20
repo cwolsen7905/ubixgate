@@ -250,7 +250,7 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 	if req.Params.RequestState != "" || len(req.Params.InputResponses) > 0 {
 		// A retry carrying answers: the state must be one this gateway sealed for this
 		// user and tool, and the answers must be to the requests it passed on.
-		up, ok := g.open(req.Params.RequestState, p.User, req.Params.Name, req.Params.InputResponses)
+		up, ok := g.open(req.Params.RequestState, p.User, req.Params.Name, argsHash(args), req.Params.InputResponses)
 		if !ok {
 			return deny(RuleRequestState, RuleRequestState)
 		}
