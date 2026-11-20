@@ -238,7 +238,7 @@ Offline: a tool on a configured upstream is assumed to exist; the per-user limit
 
 Give `-user`, `-groups` and `-client` as the token's claims map them. `-client-request
 elicitation` (or `sampling`, `roots`) asks about a request to the client instead of the
-call. It cannot see the upstream's live tool list: a misspelled tool on a configured
+call, and needs a tool on a configured upstream, since only a running tool can make one. It cannot see the upstream's live tool list: a misspelled tool on a configured
 upstream is judged as if it existed.
 
 ### Requests to the client

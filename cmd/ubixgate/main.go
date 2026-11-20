@@ -137,6 +137,11 @@ func explain(args []string, stdout, stderr io.Writer) int {
 	}
 	server, tool, _ := strings.Cut(*name, gateway.Sep)
 	known := tool != "" && cfg.Upstream(server) != nil
+	if *kind != "" && !known {
+		// The gateway decides a client request only for a tool it is already running.
+		fmt.Fprintf(stderr, "explain: -client-request needs a tool on a configured upstream (server__tool), not %q\n", *name)
+		return 2
+	}
 	dec, shown := gateway.Decide(context.Background(), pol, policy.Request{Principal: p, Server: server, Tool: tool,
 		Args: callArgs, ClientRequest: *kind}, known)
 

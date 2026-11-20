@@ -51,6 +51,10 @@ func TestPolicyExplain(t *testing.T) {
 			1, []string{"rule:     unknown-tool", "shown:    denied by rule default-deny"}},
 		{[]string{"-user", "alice", "-groups", "developers", "-tool", "tickets__ticket_create", "-client-request", "sampling"},
 			1, []string{"rule:     default-deny"}},
+		// A client request comes only from a tool the gateway is running, so an unknown
+		// tool is a usage error, never a decision the gateway could not make.
+		{[]string{"-user", "alice", "-tool", "jira__x", "-client-request", "sampling"}, 2, nil},
+		{[]string{"-user", "alice", "-tool", "tickets", "-client-request", "sampling"}, 2, nil},
 		{[]string{"-user", "alice"}, 2, nil},
 		{[]string{"-tool", "tickets__x", "-arg", "noequals"}, 2, nil},
 	}
