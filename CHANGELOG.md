@@ -8,6 +8,14 @@ interface is listed under **Interface changes** in the release that makes it.
 
 ## [Unreleased]
 
+### Added
+
+- A Helm chart in `deploy/charts/ubixgate`: a Deployment from the gateway's config as a
+  value, a Service, and optionally an Ingress that exposes only the MCP endpoint and its
+  protected resource metadata, a ServiceMonitor and a PodDisruptionBudget. Config changes
+  roll the pods. No image is published yet; the chart needs one you build. `make
+  chart-check` lints and renders it and validates the rendered config.
+
 ## [0.1.0-beta.1] - not yet released
 
 The first public beta: one authenticated MCP endpoint in front of many MCP servers, with

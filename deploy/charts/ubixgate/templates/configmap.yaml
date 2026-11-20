@@ -1,0 +1,11 @@
+{{- if not .Values.existingConfigMap -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ubixgate.fullname" . }}
+  labels:
+    {{- include "ubixgate.labels" . | nindent 4 }}
+data:
+  ubixgate.yaml: |
+    {{- include "ubixgate.configYAML" . | nindent 4 }}
+{{- end }}

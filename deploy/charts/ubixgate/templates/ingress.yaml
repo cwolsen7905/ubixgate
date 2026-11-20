@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled -}}
+{{- $host := include "ubixgate.ingressHost" . -}}
+{{- $path := include "ubixgate.ingressPath" . -}}
+{{- if or (not $host) (not $path) -}}
+{{- fail "ingress needs a host and path: set config.public_url, or ingress.host and ingress.path with existingConfigMap" -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ubixgate.fullname" . }}
+  labels:
+    {{- include "ubixgate.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ required "ingress.tlsSecret is required: the gateway carries bearer tokens, so the Ingress serves HTTPS" .Values.ingress.tlsSecret }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # Only the MCP endpoint and its protected resource metadata are public.
+          - path: {{ $path | quote }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "ubixgate.fullname" . }}
+                port:
+                  name: http
+          - path: /.well-known/oauth-protected-resource
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ubixgate.fullname" . }}
+                port:
+                  name: http
+{{- end }}
