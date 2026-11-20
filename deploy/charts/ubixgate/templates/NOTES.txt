@@ -1,0 +1,29 @@
+uBixGate ({{ .Chart.AppVersion }}) deployed as {{ include "ubixgate.fullname" . }}.
+
+  Beta software with no independent security review yet.
+
+In the cluster:
+  http://{{ include "ubixgate.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}{{ include "ubixgate.ingressPath" . }}
+{{- if .Values.config.public_url }}
+
+Clients connect to {{ .Values.config.public_url }}
+and their tokens must carry exactly that URL as the audience.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+The Ingress exposes only the MCP endpoint and /.well-known/oauth-protected-resource.
+{{- else }}
+
+No Ingress: clients outside the cluster cannot reach the gateway until you add one
+(ingress.enabled) or expose the Service another way.
+{{- end }}
+
+Check readiness (it names any upstream or Vault check that fails):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ubixgate.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s localhost:8080/readyz
+{{- if .Values.existingConfigMap }}
+
+Config comes from ConfigMap {{ .Values.existingConfigMap }}. Pods do not restart when it
+changes: run `kubectl rollout restart deployment/{{ include "ubixgate.fullname" . }}`.
+{{- end }}

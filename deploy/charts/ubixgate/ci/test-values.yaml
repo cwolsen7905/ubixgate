@@ -1,0 +1,40 @@
+# Values for bin/chart-check.sh: every optional part switched on, with a config that
+# `ubixgate check` must accept. Not a deployment example; every value is a placeholder.
+image:
+  repository: registry.example.com/ubixgate
+
+config:
+  public_url: https://mcp.example.com/mcp
+  identity:
+    mode: jwt
+    issuer: https://idp.example.com
+    jwks_url: https://idp.example.com/jwks
+    claims: { user: email, groups: groups, client: azp }
+  vault:
+    address: http://ubixvault.vault.svc:8200
+    auth: { method: kubernetes, role: ubixgate }
+  upstreams:
+    - name: tickets
+      transport: http
+      url: http://tickets.tools.svc:9000/mcp
+      credential: { path: secret/data/mcp/tickets, field: token, format: "Bearer {value}" }
+  limits: { per_user_per_minute: 120 }
+  audit: { sink: stdout }
+  policy:
+    rules:
+      - name: devs-tickets
+        effect: allow
+        when: { groups: [developers] }
+        server: tickets
+        tools: ["*"]
+
+replicaCount: 2
+podDisruptionBudget:
+  enabled: true
+ingress:
+  enabled: true
+  className: nginx
+  tlsSecret: mcp-example-tls
+metrics:
+  serviceMonitor:
+    enabled: true

@@ -16,7 +16,7 @@ GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo go run git
 # internal/ stays under this many lines. Raising it is a decision, not a fix.
 SIZE_BUDGET := 4000
 
-.PHONY: build test lint fmt-check vet prose-check size-check script-check check cross dist release-notes loc clean
+.PHONY: build test lint fmt-check vet prose-check size-check script-check chart-check check cross dist release-notes loc clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o bin/ubixgate ./cmd/ubixgate
@@ -56,6 +56,11 @@ loc:
 script-check:
 	@bash bin/promote_test.sh >/dev/null || { bash bin/promote_test.sh; exit 1; }
 	@echo "promote.sh tests pass."
+
+# The Helm chart: lint, render, validate the rendered config. Needs helm, so it is not
+# part of `check`; CI runs it as its own job.
+chart-check:
+	@bash bin/chart-check.sh
 
 cross:
 	@for t in $(TARGETS); do \

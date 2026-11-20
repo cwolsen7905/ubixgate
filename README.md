@@ -239,6 +239,11 @@ docker build -t ubixgate .                   # distroless, non-root
 Logs are JSON on stderr (`log/slog`). Grant the gateway's Vault identity read access to
 exactly the configured credential paths, nothing else.
 
+In Kubernetes, use the Helm chart in [deploy/charts/ubixgate](deploy/charts/ubixgate/README.md).
+It takes the config above as a value, exposes only the MCP endpoint and its metadata on
+the Ingress, and logs in to Vault with the pod's service account. No image is published
+yet, so you build and push one first.
+
 ## Security model
 
 uBixGate is a policy and attribution point for agents acting on behalf of authenticated

@@ -73,13 +73,24 @@ go-cross:
     paths: [dist/]
     expire_in: 1 week
 
+# The Helm chart: lint, render with every part on, run `ubixgate check` on the rendered
+# config (bin/chart-check.sh). helm runs from its own image, ubixgate from the Go image.
+chart-check:
+  extends: .go
+  variables:
+    HELM_IMAGE: alpine/helm:4.2.4
+  script:
+    - export HELM="docker run --rm -v $PWD:/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp $HELM_IMAGE"
+    - export UBIXGATE="docker run --rm -v $PWD:/src -w /src --user $(id -u):$(id -g) -v $HOME/.cache/ubixgate-go:/cache -e HOME=/tmp -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod -e GOFLAGS=-buildvcs=false $GO_IMAGE go run ./cmd/ubixgate"
+    - bash bin/chart-check.sh
+
 # dev -> main. main only ever moves by fast-forward from a green dev (bin/promote.sh, which
 # fails closed and never forces). Runs only on a push pipeline of dev, after every check
 # above has passed. Needs the GITLAB_PROMOTE_TOKEN CI variable (masked and protected).
 promote-to-main:
   stage: promote
   tags: [shell]
-  needs: [public-boundary, go-check, go-cross]
+  needs: [public-boundary, go-check, go-cross, chart-check]
   resource_group: promote-main
   interruptible: false
   variables:

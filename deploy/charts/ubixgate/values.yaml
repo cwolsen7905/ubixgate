@@ -1,0 +1,150 @@
+# Default values for the ubixgate chart. The chart README explains each part.
+
+# The per-user call limit is kept in memory, and each replica runs its own stdio upstream
+# processes, so with N replicas a user gets up to N times the limit.
+replicaCount: 1
+
+image:
+  # No official image is published yet. Build the Dockerfile at the repo root, push it
+  # to your registry and set the repository here; the chart refuses to render without it.
+  repository: ""
+  tag: ""            # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Port the gateway listens on inside the pod. The chart sets the config's `listen` to
+# this port, so do not set `listen` in `config`.
+containerPort: 8080
+
+logLevel: info       # debug, info, warn or error
+
+# The gateway's config file, written as YAML into a ConfigMap and mounted at
+# /etc/ubixgate/ubixgate.yaml. It is the same file `ubixgate check` validates; unknown keys
+# are errors. public_url is required: it is the full MCP endpoint URL clients use and the
+# audience their tokens must carry. Example:
+#
+#   config:
+#     public_url: https://mcp.example.com/mcp
+#     identity:
+#       mode: jwt
+#       issuer: https://idp.example.com
+#       jwks_url: https://idp.example.com/jwks
+#       claims: { user: email, groups: groups, client: azp }
+#     vault:
+#       address: http://ubixvault.vault.svc:8200
+#       auth: { method: kubernetes, role: ubixgate }
+#     upstreams:
+#       - name: tickets
+#         transport: http
+#         url: http://tickets.tools.svc:9000/mcp
+#         credential: { path: secret/data/mcp/tickets, field: token, format: "Bearer {value}" }
+#     audit: { sink: stdout }
+#     policy:
+#       rules:
+#         - name: devs-tickets
+#           effect: allow
+#           when: { groups: [developers] }
+#           server: tickets
+#           tools: ["*"]
+#
+# A change to config rolls the pods (the ConfigMap's checksum is a pod annotation).
+config: {}
+
+# Use a ConfigMap you manage instead of `config`. It must hold the file under the key
+# below, and its `listen` must match containerPort. Pods do not roll when it changes.
+existingConfigMap: ""
+existingConfigMapKey: ubixgate.yaml
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # The Vault `kubernetes` login method sends the pod's service account token, so it
+  # must be mounted. Turn this off only if you use `token` or `approle`.
+  automount: true
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# --- Ingress ---------------------------------------------------------------------------
+# Exposes only the MCP endpoint and the protected resource metadata under
+# /.well-known/oauth-protected-resource. /metrics, /healthz and /readyz stay inside the
+# cluster. The gateway speaks plain HTTP; TLS ends at the Ingress.
+ingress:
+  enabled: false
+  className: ""
+  # Host and MCP path default to those of config.public_url, so they cannot drift from
+  # the token audience. Set them only with existingConfigMap.
+  host: ""
+  path: ""
+  tlsSecret: ""      # required: a kubernetes.io/tls Secret in this namespace
+  annotations: {}
+
+# --- Metrics ---------------------------------------------------------------------------
+# Prometheus metrics are served at GET /metrics on the service port. Optionally create a
+# Prometheus Operator ServiceMonitor (needs the monitoring.coreos.com CRDs).
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+
+# Extra volumes and mounts: AppRole id files, a static Vault token, the audit hash key,
+# a volume for a file audit sink, or data for stdio upstreams.
+extraVolumes: []
+extraVolumeMounts: []
+extraEnv: []
+
+# Seconds the gateway gets to drain in-flight calls on shutdown (it waits up to 15).
+terminationGracePeriodSeconds: 20
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  # The distroless :nonroot image runs as uid/gid 65532.
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+# Liveness uses /healthz (the process is serving). Readiness uses /readyz, which fails
+# until every upstream has listed its tools and Vault answers.
+probes:
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 15
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 10
+    failureThreshold: 3
