@@ -69,6 +69,11 @@ policy:
       when: { groups: [developers, contractors] }
       server: stdio
       tools: [status, env_has, ask]
+    - name: personal-tickets
+      effect: allow
+      when: { groups: [personal] }
+      server: mine
+      tools: ["*"]
     - name: alice-confirms-closes
       effect: allow
       when: { users: [alice@example.com] }
@@ -80,11 +85,14 @@ policy:
 func start(t *testing.T, ticketVersions []string) *env {
 	t.Helper()
 	e := &env{idp: fakes.NewIdP(), vault: fakes.NewVault(),
-		tickets: &fakes.Tickets{Token: "svc-secret-1", Identity: "svc-tickets", Versions: ticketVersions}}
+		tickets: &fakes.Tickets{Token: "svc-secret-1", Identity: "svc-tickets", Versions: ticketVersions,
+			Users: map[string]string{"Bearer carol-own-token": "carol"}}}
 	t.Cleanup(e.idp.Server.Close)
 	t.Cleanup(e.vault.Server.Close)
 	e.vault.Put("secret/data/mcp/tickets", map[string]any{"token": "svc-secret-1"})
 	e.vault.Put("secret/data/mcp/stdio", map[string]any{"token": "stdio-secret-1"})
+	e.vault.Put("secret/data/mcp/mine/carol@example.com", map[string]any{"token": "carol-own-token"})
+	e.vault.Put("secret/data/mcp/shared@example.com", map[string]any{"token": "svc-secret-1"})
 	up := httptest.NewServer(e.tickets.Handler())
 	t.Cleanup(up.Close)
 
@@ -115,6 +123,10 @@ upstreams:
     transport: http
     url: %s/mcp
     credential: { path: secret/data/mcp/tickets, field: token, format: "Bearer {value}" }
+  - name: mine
+    transport: http
+    url: %s/mcp
+    credential: { path: "secret/data/mcp/mine/{user}", catalog_path: secret/data/mcp/tickets, field: token, format: "Bearer {value}" }
   - name: stdio
     transport: stdio
     command: [%q]
@@ -122,7 +134,7 @@ upstreams:
     credential: { path: secret/data/mcp/stdio, field: token, env: STDIO_TOKEN }
 audit: { sink: file, path: %s }
 `, e.url, e.idp.Issuer, e.idp.JWKSURL(), e.vault.Server.URL, write("role", e.vault.RoleID),
-		write("secret", e.vault.SecretID), up.URL, exe, stdioEnv, e.audit) + policyYAML
+		write("secret", e.vault.SecretID), up.URL, up.URL, exe, stdioEnv, e.audit) + policyYAML
 	cfg, err := config.Parse([]byte(cfgYAML))
 	if err != nil {
 		t.Fatal(err)
@@ -513,5 +525,35 @@ func TestClientRequestsMixed(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("audit:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A per-user credential: each caller's calls carry their own token, a caller without
+// one is refused, and the shared catalog credential is never used for a call.
+func TestPerUserCredentials(t *testing.T) {
+	e := start(t, nil)
+	args := map[string]any{"project": "myorg/web"}
+	carol := e.connect(t, e.token("carol", "personal"), "")
+	if text, isErr := call(t, carol, "mine__ticket_list", args); isErr || !strings.HasPrefix(text, "authenticated as carol:") {
+		t.Errorf("carol: %q", text)
+	}
+	// dave has no secret of his own; "../shared" would reach another secret if the
+	// user name were put in the path unchecked.
+	for _, user := range []string{"dave", "../shared"} {
+		s := e.connect(t, e.token(user, "personal"), "")
+		if text, isErr := call(t, s, "mine__ticket_list", args); !isErr || text != "upstream error: credential unavailable" {
+			t.Errorf("%s: %q", user, text)
+		}
+	}
+	if got := e.tickets.Calls(); !slices.Equal(got, []string{"carol"}) {
+		t.Errorf("the upstream ran calls as %v, want only carol's", got)
+	}
+	var got []string
+	for _, r := range readAudit(t, e.audit) {
+		got = append(got, r.Status+"/"+r.Reason)
+	}
+	want := []string{"ok/", "denied/credential_unavailable", "denied/credential_unavailable"}
+	if !slices.Equal(got, want) {
+		t.Errorf("audit = %v, want %v", got, want)
 	}
 }

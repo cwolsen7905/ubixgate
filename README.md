@@ -159,6 +159,7 @@ upstreams:
     transport: http
     url: http://tickets:9000/mcp
     credential: { path: secret/data/mcp/tickets, field: token, format: "Bearer {value}", ttl: 60s }
+    # per user: credential: { path: "secret/data/mcp/tickets/{user}", catalog_path: secret/data/mcp/tickets, ... }
   - name: shepherd
     transport: stdio
     command: [shepherd, mcp]
@@ -169,6 +170,17 @@ limits: { per_user_per_minute: 120 }       # in memory, per replica
 request_state_key_file: /run/state_key     # optional; see "Requests to the client" below
 audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }   # or sink: stdout
 ```
+
+### Per-user credentials
+
+An HTTP upstream's credential path may contain `{user}`. Each call then reads the
+caller's own secret (`secret/data/mcp/tickets/alice@example.com`), so the upstream acts
+as, and logs, that person. A caller with no secret there, or whose user name has
+characters other than letters, digits and `@ . _ + -` (or is `.` or `..`), is refused
+with reason `credential_unavailable`; the shared credential is never used instead.
+`catalog_path` names the shared secret the gateway uses only to connect and list the
+upstream's tools, never for a call. A stdio upstream cannot have a per-user credential,
+since one process serves every caller.
 
 Keep upstream names short: some clients limit tool names to 64 characters, and the prefix
 counts.
@@ -325,7 +337,8 @@ policy allows can still do everything that call can do.
 - **A compromised upstream.** It holds its injected credential and sees every call routed
   to it.
 - **A compromised gateway host.** It holds a Vault token and cached credentials for every
-  upstream. Scope its Vault policy tightly.
+  upstream, and with per-user credentials, the token can read every user's secret.
+  Scope its Vault policy tightly.
 - **A user posing as another client.** The client name comes from a signed claim, but a
   user can run any program with their own token. Treat `client` as attribution, not a
   boundary, unless your IdP issues per-client tokens.
@@ -341,7 +354,7 @@ policy allows can still do everything that call can do.
 | Area | State |
 |---|---|
 | Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
-| Upstream credentials | One service credential per upstream. Upstream logs see the gateway, not the person; the audit log is the per-user record. Per-user credentials are on the roadmap |
+| Upstream credentials | One service credential per upstream, or, for HTTP upstreams, one per user read from a `{user}` path, which an administrator stores in Vault for each person. With a service credential, upstream logs see the gateway and the audit log is the per-user record. Exchanging the caller's token at the identity provider for one per upstream (RFC 8693) is not built. stdio upstreams take only a service credential |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
 | Leases | Dynamic secrets are read and their lease caps the cache, but leases are not revoked when unused; keep their TTLs short |
 | Requests to the client | Elicitation, sampling and roots pass through only between a 2026-07-28 client and a 2026-07-28 upstream, when a rule allows them. Clients and upstreams on 2025-11-25 are refused them. Without a shared `request_state_key_file`, a retry must reach the same replica |

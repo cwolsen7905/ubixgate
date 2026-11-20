@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -86,16 +87,20 @@ func (u *Upstream) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Call forwards one tool call; params.Name is the upstream's own tool name. Errors
+// Call forwards one tool call made for user; params.Name is the upstream's own tool name. Errors
 // returned are transport, credential or protocol failures; a tool that ran and failed
 // comes back as a result with IsError set. A result that asks for client input is
 // returned as is (NeedsInput), for the gateway to decide on.
-func (u *Upstream) Call(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, u.cfg.Timeout)
+func (u *Upstream) Call(ctx context.Context, user string, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	ctx, cancel := context.WithTimeout(context.WithValue(ctx, callerKey{}, user), u.cfg.Timeout)
 	defer cancel()
 	if cr := u.cfg.Credential; cr != nil && u.cfg.Transport == "http" {
 		// Fetch now so a Vault failure is reported as such, not as a transport error.
-		if _, err := u.creds.Get(ctx, cr); err != nil {
+		cr, err := credFor(ctx, cr)
+		if err == nil {
+			_, err = u.creds.Get(ctx, cr)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -226,6 +231,35 @@ func (u *Upstream) Close() error {
 	return nil
 }
 
+// PerUser reports whether calls use the caller's own credential.
+func (u *Upstream) PerUser() bool { return u.cfg.Credential != nil && u.cfg.Credential.PerUser() }
+
+// callerKey marks a context as a tool call made for a user. Call always sets it, and the
+// HTTP requests of that call carry the context.
+type callerKey struct{}
+
+var userRE = regexp.MustCompile(`^[A-Za-z0-9@._+-]+$`)
+
+// credFor picks the credential for a request: a per-user one for a call, resolved for
+// its user, and the catalog one only for requests that are not calls. A user name that
+// cannot safely form a path is refused, never mapped to another secret.
+func credFor(ctx context.Context, cr *config.Credential) (*config.Credential, error) {
+	if !cr.PerUser() {
+		return cr, nil
+	}
+	c := *cr
+	user, isCall := ctx.Value(callerKey{}).(string)
+	switch {
+	case !isCall:
+		c.Path = cr.CatalogPath
+	case !userRE.MatchString(user) || user == "." || user == "..":
+		return nil, fmt.Errorf("%w: user %q cannot name a credential path", secrets.ErrUnavailable, user)
+	default:
+		c.Path = strings.ReplaceAll(cr.Path, "{user}", user)
+	}
+	return &c, nil
+}
+
 // credTransport attaches the upstream's credential to every HTTP request. On a 401 it
 // drops the cached credential and retries once with a fresh one, which is safe because
 // a rejected request was not executed.
@@ -239,8 +273,12 @@ func (t *credTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.cred == nil {
 		return t.base.RoundTrip(req)
 	}
+	cred, err := credFor(req.Context(), t.cred)
+	if err != nil {
+		return nil, err
+	}
 	send := func() (*http.Response, error) {
-		v, err := t.creds.Get(req.Context(), t.cred)
+		v, err := t.creds.Get(req.Context(), cred)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +288,7 @@ func (t *credTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				return nil, err
 			}
 		}
-		r.Header.Set(t.cred.Header, v)
+		r.Header.Set(cred.Header, v)
 		return t.base.RoundTrip(r)
 	}
 	resp, err := send()
@@ -258,7 +296,7 @@ func (t *credTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 	_ = resp.Body.Close()
-	t.creds.Invalidate(t.cred)
+	t.creds.Invalidate(cred)
 	return send()
 }
 
