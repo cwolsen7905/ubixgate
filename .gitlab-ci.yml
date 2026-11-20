@@ -84,6 +84,18 @@ chart-check:
     - export UBIXGATE="docker run --rm -v $PWD:/src -w /src --user $(id -u):$(id -g) -v $HOME/.cache/ubixgate-go:/cache -e HOME=/tmp -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod -e GOFLAGS=-buildvcs=false $GO_IMAGE go run ./cmd/ubixgate"
     - bash bin/chart-check.sh
 
+# The release image's Dockerfile: build it for the runner's platform and check that the
+# binary inside runs and reports its version. Nothing is pushed; the image is removed.
+image-build:
+  extends: .every_pipeline
+  tags: [shell]
+  timeout: 15 minutes
+  script:
+    - img="ubixgate-ci:${CI_JOB_ID}"
+    - docker build --build-arg VERSION=ci-check -t "$img" .
+    - out=$(docker run --rm "$img" version); echo "$out"; docker rmi "$img" >/dev/null
+    - test "$out" = "ubixgate ci-check"
+
 # The Docker Compose demo, end to end: build the images, start uBixVault, the demo IdP, the
 # fake tracker and the gateway, run demo.sh and check its outcomes (bin/ci/demo-compose.sh).
 # Publishes no host ports, so it is safe on the shared runner. It pulls the uBixVault image
@@ -105,7 +117,7 @@ demo-compose:
 promote-to-main:
   stage: promote
   tags: [shell]
-  needs: [public-boundary, go-check, go-cross, chart-check, demo-compose]
+  needs: [public-boundary, go-check, go-cross, chart-check, demo-compose, image-build]
   resource_group: promote-main
   interruptible: false
   variables:
