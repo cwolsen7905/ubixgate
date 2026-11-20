@@ -29,6 +29,7 @@ type Config struct {
 	Limits    Limits     `yaml:"limits"`
 	Audit     Audit      `yaml:"audit"`
 	Policy    Policy     `yaml:"policy"`
+	Tracing   *Tracing   `yaml:"tracing"` // off when absent
 	// RequestStateKeyFile holds the key that seals upstream request state to its caller.
 	// Replicas behind one URL need the same key; without one each process makes its own.
 	RequestStateKeyFile string `yaml:"request_state_key_file"`
@@ -102,6 +103,13 @@ type Audit struct {
 	ChainKeyFile string `yaml:"chain_key_file"`
 }
 
+// Tracing exports OpenTelemetry spans over OTLP/HTTP.
+type Tracing struct {
+	Endpoint    string  `yaml:"endpoint"`     // e.g. http://collector:4318
+	ServiceName string  `yaml:"service_name"` // default ubixgate
+	SampleRatio float64 `yaml:"sample_ratio"` // of new traces, in (0, 1]; default 1
+}
+
 // Policy is the rule list.
 type Policy struct {
 	Rules []policy.Rule `yaml:"rules"`
@@ -155,6 +163,14 @@ func (c *Config) defaults() {
 			if u.Transport == "http" && cr.Header == "" {
 				cr.Header = "Authorization"
 			}
+		}
+	}
+	if t := c.Tracing; t != nil {
+		if t.ServiceName == "" {
+			t.ServiceName = "ubixgate"
+		}
+		if t.SampleRatio == 0 {
+			t.SampleRatio = 1
 		}
 	}
 	if c.Vault != nil && c.Vault.Auth.Mount == "" {
@@ -285,6 +301,14 @@ func (c *Config) validate() error {
 		}
 	default:
 		bad("audit.sink must be file or stdout")
+	}
+	if t := c.Tracing; t != nil {
+		if u, err := url.Parse(t.Endpoint); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			bad("tracing: endpoint must be an absolute http(s) URL, such as http://collector:4318")
+		}
+		if t.SampleRatio < 0 || t.SampleRatio > 1 {
+			bad("tracing: sample_ratio must be in (0, 1]")
+		}
 	}
 	if c.Audit.ChainKeyFile != "" && c.Audit.Sink != "file" {
 		bad("audit: chain_key_file needs the file sink, so a restart can continue the chain")

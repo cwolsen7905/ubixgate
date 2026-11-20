@@ -18,7 +18,7 @@ credential from a Vault-API server at call time, forwards the call, and writes o
 JSON-lines audit record. The client's token is never forwarded upstream.
 
 Not in the beta: an admin UI, multi-tenancy, rate limiting beyond a simple per-user call
-limit, SAML or SCIM, response content filtering, plugins, per-user upstream credentials,
+limit, SAML or SCIM, response content filtering, plugins, token exchange for upstream credentials,
 OPA or CEL policy engines. Do not build them; ask the maintainer.
 
 ## Code
@@ -48,7 +48,8 @@ Rules for the code:
   (`make size-check`, `make loc`). One person must be able to read it all in an afternoon.
   Prefer deleting code to adding it; raising the budget is the maintainer's call.
 - **Dependencies.** The official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`), a
-  YAML parser and the Prometheus client. Nothing else without asking. JWT validation uses
+  YAML parser, the Prometheus client and the OpenTelemetry SDK with its OTLP/HTTP
+  exporter. Nothing else without asking. JWT validation uses
   the standard library (`crypto/*`), not a JOSE package. The Vault client is our own.
 - **Protocol.** Clients may use MCP revision 2026-07-28 or 2025-11-25. Upstreams are spoken
   to in whatever they negotiate; some (stdio servers in particular) top out at 2025-11-25.

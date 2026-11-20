@@ -20,6 +20,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ubixsys/ubixgate/internal/audit"
 	"github.com/ubixsys/ubixgate/internal/identity"
@@ -139,8 +144,11 @@ func (g *Gateway) Handler(mux *http.ServeMux) {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return g.server },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: g.opts.Log})
 	verify := func(ctx context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		ctx, span := ops.Tracer().Start(ctx, "auth")
+		defer span.End()
 		p, err := g.opts.Auth.Authenticate(ctx, token)
 		if err != nil {
+			span.SetStatus(codes.Error, "authentication failed")
 			g.opts.Metrics.AuthFailures.Inc()
 			g.opts.Log.Info("authentication failed", "reason", err)
 			return nil, auth.ErrInvalidToken // the client is told only that the token is invalid
@@ -153,10 +161,20 @@ func (g *Gateway) Handler(mux *http.ServeMux) {
 		// Expiry is already checked by the authenticator; static tokens have none.
 		AllowMissingExpiration: true,
 	})
-	mux.Handle(path, requireAuth(mcpHandler))
+	mux.Handle(path, traced(requireAuth(mcpHandler)))
 	meta := identity.ResourceMetadata(g.opts.PublicURL, g.opts.Issuers)
 	mux.Handle("GET "+metaPath, meta)
 	mux.Handle("GET "+identity.MetadataPath, meta)
+}
+
+// traced starts a span per MCP request, continuing the caller's W3C trace context.
+func traced(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		ctx, span := ops.Tracer().Start(ctx, "mcp "+r.Method, trace.WithSpanKind(trace.SpanKindServer))
+		defer span.End()
+		h.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
@@ -194,6 +212,8 @@ func (g *Gateway) lookup(name string) (route, bool) {
 // call runs one tools/call and always writes exactly one audit record.
 func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallToolResult {
 	start := time.Now()
+	ctx, span := ops.Tracer().Start(ctx, "tools/call")
+	defer span.End()
 	p := principalOf(req)
 	rec := audit.Record{Time: start.UTC(), RequestID: newID(), User: p.User, Groups: p.Groups,
 		Client: p.Client, ClientDeclared: declaredClient(req), Tool: req.Params.Name}
@@ -209,6 +229,13 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 			res.Meta = mcp.Meta{}
 		}
 		res.Meta["ubixgate/request_id"] = rec.RequestID
+		// Names and outcomes only: no argument values, credentials or caller identity.
+		span.SetAttributes(attribute.String("mcp.tool.name", rec.Tool), attribute.String("ubixgate.server", rec.Server),
+			attribute.String("ubixgate.request_id", rec.RequestID), attribute.String("ubixgate.decision", rec.Decision),
+			attribute.String("ubixgate.rule", rec.Rule), attribute.String("ubixgate.status", rec.Status))
+		if rec.Status != audit.StatusOK && rec.Status != audit.StatusInputRequired {
+			span.SetStatus(codes.Error, rec.Status)
+		}
 		return res
 	}
 	deny := func(rule, shown string) *mcp.CallToolResult {
@@ -221,7 +248,10 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 	rec.Server = server
 	pr := policy.Request{Principal: p, Server: server, Tool: tool, Args: args}
 	r, known := g.lookup(req.Params.Name)
+	_, pspan := ops.Tracer().Start(ctx, "policy")
 	dec, shown := Decide(ctx, g.decider(), pr, known)
+	pspan.SetAttributes(attribute.String("ubixgate.decision", string(dec.Effect)), attribute.String("ubixgate.rule", dec.Rule))
+	pspan.End()
 	if !dec.Allowed() {
 		if !known {
 			rec.Server = "" // keep made-up names out of metric labels
