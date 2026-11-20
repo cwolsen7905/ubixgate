@@ -1,0 +1,8 @@
+# CI only, layered on compose.yaml by bin/ci/demo-compose.sh. A shared runner must not
+# publish host ports (parallel jobs would collide), so demo.sh runs in a container on the
+# stack's own network instead of from the host.
+services:
+  demo-idp:
+    ports: !reset []
+  ubixgate:
+    ports: !reset []
