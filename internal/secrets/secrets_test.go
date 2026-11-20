@@ -260,3 +260,56 @@ func TestLeaseCapsTTL(t *testing.T) {
 		t.Errorf("expiry in %v, want the 10s lease, not the 60s TTL", got)
 	}
 }
+
+// A value nobody asks for again is swept once it expires, and its lease revoked; a value
+// still fresh, and one a process holds, keep theirs.
+func TestSweep(t *testing.T) {
+	r := &leaseReader{lease: time.Hour}
+	cache := NewCache(r)
+	cache.Grace = 0
+	now := time.Now()
+	cache.now = func() time.Time { return now }
+	ctx := context.Background()
+	gone := &config.Credential{Path: "secret/data/mcp/tickets/carol", Field: "token", TTL: time.Minute}
+	held := &config.Credential{Path: "secret/data/mcp/stdio", Field: "token", TTL: time.Minute}
+	fresh := &config.Credential{Path: "secret/data/mcp/tickets/dave", Field: "token", TTL: time.Hour}
+	_, _ = cache.Get(ctx, gone)  // l1
+	_, _ = cache.Get(ctx, held)  // l2
+	_, _ = cache.Get(ctx, fresh) // l3
+	lease := cache.Hold(held)
+
+	cache.Sweep() // nothing has expired
+	now = now.Add(2 * time.Minute)
+	cache.Sweep()
+	if got := r.revokedSoon("l1"); !slices.Equal(got, []string{"l1"}) {
+		t.Fatalf("after sweep: %v, want [l1]", got)
+	}
+	if !cache.Expiry(gone).IsZero() || cache.Expiry(fresh).IsZero() {
+		t.Error("the sweep should forget the expired value and keep the fresh one")
+	}
+	cache.Release(lease) // the process stops: its swept lease goes now
+	if got := r.revokedSoon("l1", "l2"); !slices.Equal(got, []string{"l1", "l2"}) {
+		t.Fatalf("after release: %v, want [l1 l2]", got)
+	}
+}
+
+// Vault having nothing at a path is ErrNoSecret; Vault being down is not.
+func TestNoSecret(t *testing.T) {
+	v := fakes.NewVault()
+	defer v.Server.Close()
+	c := login(t, v)
+	cache := NewCache(c)
+	if _, err := cache.Get(context.Background(), cred); !errors.Is(err, ErrNoSecret) {
+		t.Errorf("missing secret: %v, want ErrNoSecret", err)
+	}
+	v.Put("secret/data/mcp/tickets", map[string]any{"other": "x"})
+	if _, err := cache.Get(context.Background(), cred); !errors.Is(err, ErrNoSecret) {
+		t.Errorf("missing field: %v, want ErrNoSecret", err)
+	}
+	v.SetDown(true)
+	cache.Invalidate(cred)
+	_, err := cache.Get(context.Background(), cred)
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoSecret) {
+		t.Errorf("vault down: %v, want ErrUnavailable and not ErrNoSecret", err)
+	}
+}

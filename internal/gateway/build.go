@@ -69,6 +69,10 @@ type Runtime struct {
 // send tools/list_changed.
 var RefreshEvery = 5 * time.Minute
 
+// SweepEvery is how often expired credentials are dropped from the cache and their
+// leases revoked.
+var SweepEvery = time.Minute
+
 // Build assembles a gateway from cfg. It logs in to Vault but does not wait for the
 // upstreams; Start connects them in the background, and /readyz reports when all are up.
 func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime, error) {
@@ -175,6 +179,16 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 func (rt *Runtime) Start(ctx context.Context) {
 	if rt.vault != nil {
 		go rt.vault.KeepAlive(ctx)
+		go func() { // revoke the leases of values nobody asks for again
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(SweepEvery):
+					rt.creds.Sweep()
+				}
+			}
+		}()
 	}
 	for _, up := range rt.ups {
 		go func() {

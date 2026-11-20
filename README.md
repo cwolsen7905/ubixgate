@@ -179,10 +179,16 @@ An HTTP upstream's credential path may contain `{user}`. Each call then reads th
 caller's own secret (`secret/data/mcp/tickets/alice@example.com`), so the upstream acts
 as, and logs, that person. A caller with no secret there, or whose user name has
 characters other than letters, digits and `@ . _ + -` (or is `.` or `..`), is refused
-with reason `credential_unavailable`; the shared credential is never used instead.
+with status `denied` and reason `credential_unavailable`; the shared credential is never
+used instead. If Vault cannot be reached, the call fails with status `upstream_error`
+and the same reason, so an outage is not logged as a refusal. User names are matched
+exactly, case included: `Alice@example.com` and `alice@example.com` are different paths.
 `catalog_path` names the shared secret the gateway uses only to connect and list the
-upstream's tools, never for a call. A stdio upstream cannot have a per-user credential,
-since one process serves every caller.
+upstream's tools, never for a call. An upstream that keeps MCP sessions (2025-11-25) gets
+one session, opened with that shared secret, and every user's calls arrive on it, each
+with that user's own token. One that ties a session to the user who opened it will
+reject the calls. A stdio upstream cannot have a per-user credential, since one process
+serves every caller.
 
 Keep upstream names short: some clients limit tool names to 64 characters, and the prefix
 counts.
@@ -419,7 +425,7 @@ policy allows can still do everything that call can do.
 | Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
 | Upstream credentials | One service credential per upstream, or, for HTTP upstreams, one per user read from a `{user}` path, which an administrator stores in Vault for each person. With a service credential, upstream logs see the gateway and the audit log is the per-user record. Exchanging the caller's token at the identity provider for one per upstream (RFC 8693) is not built. stdio upstreams take only a service credential |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
-| Leases | A dynamic secret's lease caps the cache, read from the envelope (HashiCorp Vault) or from inside `data` (uBixVault). A lease the gateway stops using is revoked: after the longest upstream timeout when the cache replaces or drops it, when a stdio process holding it stops, and at shutdown. A revoke that fails is logged and the lease expires on its own. A gateway that is killed revokes nothing |
+| Leases | A dynamic secret's lease caps the cache, read from the envelope (HashiCorp Vault) or from inside `data` (uBixVault). A lease the gateway stops using is revoked: after the longest upstream timeout when the cache replaces or drops it (an expired value nobody asks for again is dropped within a minute), when a stdio process holding it stops, and at shutdown. A revoke that fails is logged and the lease expires on its own. A gateway that is killed revokes nothing |
 | Requests to the client | Elicitation, sampling and roots pass through only between a 2026-07-28 client and a 2026-07-28 upstream, when a rule allows them. Clients and upstreams on 2025-11-25 are refused them. Without a shared `request_state_key_file`, a retry must reach the same replica |
 | Identity | OIDC JWTs. No SAML or SCIM |
 | Not included | Admin UI, multi-tenancy, response filtering, plugins, rate limiting beyond the per-user limit |
