@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -90,6 +91,17 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 		red.HashKey = []byte(strings.TrimSpace(string(key)))
 	}
 
+	// Without a key file the key is per process, so a retry must reach the same replica.
+	stateKey := make([]byte, 32)
+	_, _ = rand.Read(stateKey)
+	if cfg.RequestStateKeyFile != "" {
+		key, err := os.ReadFile(cfg.RequestStateKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("request state key: %w", err)
+		}
+		stateKey = []byte(strings.TrimSpace(string(key)))
+	}
+
 	var g *Gateway
 	for _, uc := range cfg.Upstreams {
 		rt.ups = append(rt.ups, upstream.New(uc, creds, log, func() {
@@ -99,7 +111,7 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 		}))
 	}
 	g = New(Options{PublicURL: cfg.PublicURL, Issuers: issuers, Auth: authn, Policy: pol, Upstreams: rt.ups,
-		Audit: rt.sink, Redactor: red, PerUserRate: cfg.Limits.PerUserPerMinute, Metrics: rt.metrics, Log: log})
+		Audit: rt.sink, Redactor: red, StateKey: stateKey, PerUserRate: cfg.Limits.PerUserPerMinute, Metrics: rt.metrics, Log: log})
 	rt.Gateway = g
 
 	mux := http.NewServeMux()

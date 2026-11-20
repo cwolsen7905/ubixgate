@@ -40,12 +40,17 @@ type Principal struct {
 	Client string
 }
 
-// Request is one tool call to decide on.
+// ClientRequestKinds are what an upstream may ask of the caller's client during a call.
+var ClientRequestKinds = []string{"sampling", "elicitation", "roots"}
+
+// Request is one tool call to decide on, or, with ClientRequest set, one request an
+// upstream made of the caller's client while serving that call.
 type Request struct {
-	Principal Principal
-	Server    string
-	Tool      string
-	Args      map[string]any
+	Principal     Principal
+	Server        string
+	Tool          string
+	Args          map[string]any
+	ClientRequest string // empty for the call itself
 }
 
 // Decision is the outcome of a Request. Rule names the rule that decided, which a
@@ -85,6 +90,9 @@ type Rule struct {
 	Tools     []string          `yaml:"tools"`
 	Args      map[string]string `yaml:"args"`
 	AuditArgs []string          `yaml:"audit_args"`
+	// ClientRequests makes the rule apply to these kinds of upstream requests to the
+	// caller's client, and not to tool calls. Without it, a rule applies only to calls.
+	ClientRequests []string `yaml:"client_requests"`
 }
 
 // Rules is a validated rule list. It implements Decider.
@@ -137,6 +145,11 @@ func New(rules []Rule, servers []string) (*Rules, error) {
 				bad("args.%s %q is not a valid glob", k, v)
 			}
 		}
+		for _, k := range rule.ClientRequests {
+			if !slices.Contains(ClientRequestKinds, k) {
+				bad("client_requests: %q is not one of %v", k, ClientRequestKinds)
+			}
+		}
 		if rule.Effect == Deny {
 			r.deny = append(r.deny, rule)
 		} else {
@@ -152,16 +165,23 @@ func New(rules []Rule, servers []string) (*Rules, error) {
 // Decide evaluates req: deny rules first, then allow rules, first match wins.
 func (r *Rules) Decide(_ context.Context, req Request) (Decision, error) {
 	for _, rule := range r.deny {
-		if rule.matches(req.Principal, req.Server, req.Tool) && rule.argsMatch(req.Args) {
+		if rule.decides(req) {
 			return Decision{Effect: Deny, Rule: rule.Name}, nil
 		}
 	}
 	for _, rule := range r.allow {
-		if rule.matches(req.Principal, req.Server, req.Tool) && rule.argsMatch(req.Args) {
+		if rule.decides(req) {
 			return Decision{Effect: Allow, Rule: rule.Name, AuditArgs: rule.AuditArgs}, nil
 		}
 	}
 	return Decision{Effect: Deny, Rule: DefaultDeny}, nil
+}
+
+// decides reports whether the rule matches req, kind of request included.
+func (rule Rule) decides(req Request) bool {
+	kindOK := len(rule.ClientRequests) == 0 && req.ClientRequest == "" ||
+		req.ClientRequest != "" && slices.Contains(rule.ClientRequests, req.ClientRequest)
+	return kindOK && rule.matches(req.Principal, req.Server, req.Tool) && rule.argsMatch(req.Args)
 }
 
 // Visible reports whether a tool is listed for p: some allow rule matches it with its
@@ -170,12 +190,12 @@ func (r *Rules) Decide(_ context.Context, req Request) (Decision, error) {
 // cannot be expressed in a listing.
 func (r *Rules) Visible(p Principal, server, tool string) bool {
 	for _, rule := range r.deny {
-		if len(rule.Args) == 0 && rule.matches(p, server, tool) {
+		if len(rule.Args) == 0 && len(rule.ClientRequests) == 0 && rule.matches(p, server, tool) {
 			return false
 		}
 	}
 	for _, rule := range r.allow {
-		if rule.matches(p, server, tool) {
+		if len(rule.ClientRequests) == 0 && rule.matches(p, server, tool) {
 			return true
 		}
 	}

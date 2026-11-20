@@ -48,6 +48,18 @@ func (tk *Tickets) Handler() http.Handler {
 	mcp.AddTool(s, &mcp.Tool{Name: "ticket_create", Description: "Open a ticket."}, reply("created ticket"))
 	mcp.AddTool(s, &mcp.Tool{Name: "ticket_list", Description: "List open tickets."}, reply("listed tickets"))
 	mcp.AddTool(s, &mcp.Tool{Name: "ticket_delete", Description: "Delete a ticket."}, reply("deleted ticket"))
+	// ticket_close asks the caller to confirm, by elicitation, before it closes anything.
+	mcp.AddTool(s, &mcp.Tool{Name: "ticket_close", Description: "Close a ticket after asking."},
+		func(_ context.Context, req *mcp.CallToolRequest, in TicketArgs) (*mcp.CallToolResult, any, error) {
+			ans, ok := req.Params.InputResponses["confirm"].(*mcp.ElicitResult)
+			if !ok {
+				return &mcp.CallToolResult{RequestState: "state-for-" + in.Project, InputRequests: mcp.InputRequestMap{
+					"confirm": &mcp.ElicitParams{Message: "Close it?", RequestedSchema: map[string]any{"type": "object"}},
+				}}, nil, nil
+			}
+			text := fmt.Sprintf("closed in %s: answer %s, state %s", in.Project, ans.Action, req.Params.RequestState)
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
+		})
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +129,13 @@ func ServeStdio(ctx context.Context) error {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 		})
 	type none struct{}
+	// ask tries to elicit from the client over the shared stdio connection, as a
+	// 2025-11-25 server would, and reports what happened.
+	mcp.AddTool(s, &mcp.Tool{Name: "ask", Description: "Ask the client a question."},
+		func(ctx context.Context, req *mcp.CallToolRequest, _ none) (*mcp.CallToolResult, any, error) {
+			_, err := req.Session.Elicit(ctx, &mcp.ElicitParams{Message: "Sure?", RequestedSchema: map[string]any{"type": "object"}})
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("elicit error: %v", err)}}}, nil, nil
+		})
 	mcp.AddTool(s, &mcp.Tool{Name: "status", Description: "Report status."},
 		func(context.Context, *mcp.CallToolRequest, none) (*mcp.CallToolResult, any, error) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "all quiet"}}}, nil, nil

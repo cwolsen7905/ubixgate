@@ -29,6 +29,9 @@ type Config struct {
 	Limits    Limits     `yaml:"limits"`
 	Audit     Audit      `yaml:"audit"`
 	Policy    Policy     `yaml:"policy"`
+	// RequestStateKeyFile holds the key that seals upstream request state to its caller.
+	// Replicas behind one URL need the same key; without one each process makes its own.
+	RequestStateKeyFile string `yaml:"request_state_key_file"`
 }
 
 // Identity says how callers are authenticated.

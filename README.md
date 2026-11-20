@@ -166,6 +166,7 @@ upstreams:
     # credential: { path: ..., field: ..., env: SOME_TOKEN }   # stdio: passed as an env var
 
 limits: { per_user_per_minute: 120 }       # in memory, per replica
+request_state_key_file: /run/state_key     # optional; see "Requests to the client" below
 audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }   # or sink: stdout
 ```
 
@@ -202,8 +203,45 @@ policy:
 | Globs | `*` matches any run of characters except `/`; `?` one character; `[...]` a class. |
 | Arguments | Each argument named in `args` must be present, a string, and match. |
 | Listing | A tool is listed if an allow rule matches it (ignoring `args`) and no deny rule without `args` matches it. So a listed tool can still be denied for its arguments. |
+| Client requests | A rule with `client_requests` applies only to those requests, never to calls; a rule without it applies only to calls. See below. |
 | Unknown tools | Answered as the policy would answer that name, so probing reveals nothing beyond your own list. The audit log records `unknown-tool`. |
 | Reload | `SIGHUP` reloads the policy atomically. A file that fails validation is logged and ignored. Other changes need a restart. |
+
+### Requests to the client
+
+While it runs a tool, an upstream can ask the caller's client for something: to show
+the person a question (elicitation), to run a prompt on the client's model (sampling),
+or to list the client's roots. Under MCP 2026-07-28 these come back in an "input
+required" result, and the client answers by retrying the call.
+
+uBixGate passes such a request back to the calling client only when a rule allows that
+kind of request for that tool, and refuses the whole call otherwise. Existing rules allow
+none: an allow rule for a tool does not cover its requests.
+
+```yaml
+    - name: devs-confirm-closes
+      effect: allow
+      when: { groups: [developers] }
+      server: tickets
+      tools: [ticket_close]
+      client_requests: [elicitation]   # any of: elicitation, sampling, roots
+```
+
+The upstream's opaque request state is sealed with an HMAC to the user and the tool
+before it goes to the client, and expires after 10 minutes. A retry with state that is
+missing, altered, expired or another user's, or with answers to requests that were not
+asked, is denied by the built-in rule `invalid-request-state`. The key is generated at
+start unless `request_state_key_file` names one; with several replicas behind one URL,
+give them the same key file, or a retry that reaches another replica is refused.
+
+| Case | What happens |
+|---|---|
+| Client on 2026-07-28, upstream on 2026-07-28 | Passed through when a rule allows it |
+| Client on 2025-11-25 | Refused: this stateless gateway cannot send a request to it mid-call. The call fails, saying 2026-07-28 is required |
+| Upstream on 2025-11-25 (stdio servers often are) | Refused: one connection serves every caller, so the gateway cannot tell whose call a request belongs to. It declares no client capabilities to such upstreams |
+
+Sampling and roots are deprecated in MCP 2026-07-28 but still allowed during the
+deprecation window, so they are decided on like elicitation.
 
 ### Audit records
 
@@ -215,8 +253,9 @@ One JSON object per line. Field names are a versioned interface.
 | `user`, `groups`, `client` | From the token. `client` comes from a signed claim |
 | `client_declared` | What the client says it is. Recorded, never trusted |
 | `server`, `tool` | The upstream and the full tool name |
+| `client_request` | Set on the record for an upstream's request to the client: `elicitation`, `sampling` or `roots`. It shares the `request_id` of the call that made it |
 | `decision`, `rule` | `allow` or `deny`, and the rule that decided |
-| `status`, `reason` | `ok`, `tool_error`, `upstream_error`, `timeout` or `denied`; a reason such as `credential_unavailable` |
+| `status`, `reason` | `ok`, `tool_error`, `upstream_error`, `timeout`, `denied`, `input_required` (the call waits for the client's answers) or `not_sent` (allowed, but this client cannot receive client requests); a reason such as `credential_unavailable`, `client_request_denied` or `client_protocol` |
 | `latency_ms` | Time spent in the gateway, including the upstream |
 | `args` | Argument keys, with values `[redacted]` unless the rule's `audit_args` keeps them. With `audit.hash_args: true` and a `hash_key_file`, values become an HMAC so equal values can be correlated |
 
@@ -277,6 +316,9 @@ policy allows can still do everything that call can do.
 - **Arguments the upstream reads differently than the glob.** **Globs match the raw
   string. If an upstream normalises `myorg/..` or decodes `%2F`, an argument constraint can
   be bypassed. A constraint is only as strong as the upstream's own parsing.**
+- **What a request to the client says.** A rule decides who may receive an upstream's
+  elicitation or sampling request, not its content. An allowed elicitation can ask the
+  person anything, and an allowed sampling request spends the caller's model.
 - **A compromised upstream.** It holds its injected credential and sees every call routed
   to it.
 - **A compromised gateway host.** It holds a Vault token and cached credentials for every
@@ -299,7 +341,7 @@ policy allows can still do everything that call can do.
 | Upstream credentials | One service credential per upstream. Upstream logs see the gateway, not the person; the audit log is the per-user record. Per-user credentials are on the roadmap |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
 | Leases | Dynamic secrets are read and their lease caps the cache, but leases are not revoked when unused; keep their TTLs short |
-| Server-to-client requests | Not passed through (sampling, elicitation, roots). Upstream tools that need them will fail |
+| Requests to the client | Elicitation, sampling and roots pass through only between a 2026-07-28 client and a 2026-07-28 upstream, when a rule allows them. Clients and upstreams on 2025-11-25 are refused them. Without a shared `request_state_key_file`, a retry must reach the same replica |
 | Identity | OIDC JWTs. No SAML or SCIM |
 | Not included | Admin UI, multi-tenancy, response filtering, plugins, rate limiting beyond the per-user limit |
 | Platforms | Linux and macOS are tested. Windows builds and is untested |
