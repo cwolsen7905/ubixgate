@@ -169,6 +169,8 @@ upstreams:
 limits: { per_user_per_minute: 120 }       # in memory, per replica
 request_state_key_file: /run/state_key     # optional; see "Requests to the client" below
 audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }   # or sink: stdout
+# tracing: { endpoint: http://collector:4318, sample_ratio: 0.1 }   # OpenTelemetry; off when absent
+# audit.chain_key_file: /run/audit_key   # chain each record to the one before; see "Audit records"
 ```
 
 ### Per-user credentials
@@ -218,6 +220,27 @@ policy:
 | Client requests | A rule with `client_requests` applies only to those requests, never to calls; a rule without it applies only to calls. See below. |
 | Unknown tools | Answered as the policy would answer that name, so probing reveals nothing beyond your own list. The audit log records `unknown-tool`. |
 | Reload | `SIGHUP` reloads the policy atomically. A file that fails validation is logged and ignored. Other changes need a restart. |
+
+### Why was I denied?
+
+`ubixgate policy explain` answers that without a live call. It runs the gateway's own
+decision step on the config's rules and prints the decision, the rule, what the caller
+was shown, whether the tool is listed for them, and which arguments are logged. It exits
+0 when allowed and 1 when denied.
+
+```sh
+$ ubixgate policy explain -config examples/demo/gateway.yaml -user alice -groups developers \
+    -client claude-code -tool tickets__ticket_delete -arg project=other/repo
+decision: deny
+rule:     default-deny
+listed:   true
+Offline: a tool on a configured upstream is assumed to exist; the per-user limit, credentials and the upstream are not checked.
+```
+
+Give `-user`, `-groups` and `-client` as the token's claims map them. `-client-request
+elicitation` (or `sampling`, `roots`) asks about a request to the client instead of the
+call, and needs a tool on a configured upstream, since only a running tool can make one. It cannot see the upstream's live tool list: a misspelled tool on a configured
+upstream is judged as if it existed.
 
 ### Requests to the client
 
@@ -272,7 +295,31 @@ One JSON object per line. Field names are a versioned interface.
 | `decision`, `rule` | `allow` or `deny`, and the rule that decided |
 | `status`, `reason` | `ok`, `tool_error`, `upstream_error`, `timeout`, `denied`, `input_required` (the call waits for the client's answers) or `not_sent` (allowed, but not sent: another request in the same result was denied, or this client cannot receive them); a reason such as `credential_unavailable`, `client_request_denied` or `client_protocol` |
 | `latency_ms` | Time spent in the gateway, including the upstream |
+| `chain` | With `chain_key_file`: the HMAC linking this record to the one before. Always the last field |
 | `args` | Argument keys, with values `[redacted]` unless the rule's `audit_args` keeps them. With `audit.hash_args: true` and a `hash_key_file`, values become an HMAC so equal values can be correlated |
+
+With `audit.chain_key_file` (a key of at least 32 bytes, file sink only), every record
+ends with a `chain` field: an HMAC-SHA256 over the previous record's chain and this line.
+After a restart the gateway continues the chain from the file's last line, and it refuses
+to start a chain on top of unchained records. `ubixgate audit verify` checks the file and
+names the first line that is edited, removed, inserted or reordered:
+
+```sh
+$ ubixgate audit verify -config ubixgate.yaml
+/var/log/ubixgate/audit.jsonl: line 2: chain does not follow: this line or one before it was edited, removed or inserted
+Line 1 verifies.
+```
+
+On success it prints the last chain value. Lines cut off the end of the file leave a
+valid shorter chain, so keep a copy of the last chain somewhere the gateway host cannot
+write, and compare.
+
+One gateway writes one file: two writers on the same file interleave two chains. A
+record whose write fails does not advance the chain, and a line torn by a crash is left
+for `audit verify` to name while the gateway continues the chain on the next line. To
+rotate, move the file away and restart the gateway, which starts a new chain in the new
+file. A file rotated by copying and truncating continues the old chain; verify it with
+`-from`, the last chain of the file before it.
 
 Requests that fail authentication get no audit record (there is no verified caller to
 name). They are counted in `ubixgate_auth_failures_total` and logged.
@@ -282,6 +329,8 @@ name). They are counted in `ubixgate_auth_failures_total` and logged.
 ```sh
 make build                                   # bin/ubixgate
 bin/ubixgate check ubixgate.yaml
+bin/ubixgate audit verify -config ubixgate.yaml   # with audit.chain_key_file set
+bin/ubixgate policy explain -user alice@example.com -groups developers -tool tickets__ticket_list
 bin/ubixgate serve -config ubixgate.yaml     # -log-level debug for more
 docker build -t ubixgate .                   # distroless, non-root; or use the released
                                              # ghcr.io/ubixsys/ubixgate:<version>
@@ -295,8 +344,18 @@ docker build -t ubixgate .                   # distroless, non-root; or use the 
 | `/readyz` | Every upstream connected and listed, and Vault healthy; otherwise 503 naming what is not |
 | `/metrics` | Prometheus: `ubixgate_tool_calls_total{server,decision,status}`, `ubixgate_tool_call_duration_seconds`, `ubixgate_auth_failures_total`, `ubixgate_upstream_up` |
 
+With a `tracing` block, each MCP request is traced with OpenTelemetry and exported over
+OTLP/HTTP: spans for the request, `auth`, `tools/call`, `policy`, `credential` (HTTP
+upstreams) and `upstream`. The call span carries the tool, server, decision, rule,
+status and the audit `request_id`. No span carries argument values, credentials or the
+caller's identity; join on `request_id` to find who. A caller's W3C `traceparent` is
+continued and its sampling decision followed, and HTTP upstreams receive `traceparent`
+for the gateway's span. `sample_ratio` (default 1) applies to new traces. Tracing is
+off without the block, and then no trace context is read or passed on.
+
 Logs are JSON on stderr (`log/slog`). Grant the gateway's Vault identity read access to
-exactly the configured credential paths, nothing else.
+exactly the configured credential paths, plus `update` on `sys/leases/revoke` if any of
+them is a dynamic secret, nothing else.
 
 In Kubernetes, use the Helm chart in [deploy/charts/ubixgate](deploy/charts/ubixgate/README.md).
 It takes the config above as a value, exposes only the MCP endpoint and its metadata on
@@ -344,8 +403,12 @@ policy allows can still do everything that call can do.
   boundary, unless your IdP issues per-client tokens.
 - **Shared state inside stdio upstreams.** One process serves every caller. If it keeps
   state between calls, users can see each other's effects there.
-- **Tampering with the audit log by someone with file access.** The file is opened
-  append-only, not made tamper-evident. Ship it off the host if that matters.
+- **Tampering with the audit log by someone with file access**, unless
+  `chain_key_file` is set. With it, editing, removing, inserting or reordering records is
+  detected by `ubixgate audit verify`. Still possible: deleting lines from the end of the
+  file, or the whole file, and rewriting the log entirely by anyone who can also read
+  the key. Keep the key off the log's host if you can, and the last chain value
+  elsewhere. Ship the log off the host if that matters.
 - **Denial of service** beyond the per-user limit, which is per replica.
 - Anything an independent review would catch: **there has been none.**
 
@@ -356,7 +419,7 @@ policy allows can still do everything that call can do.
 | Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
 | Upstream credentials | One service credential per upstream, or, for HTTP upstreams, one per user read from a `{user}` path, which an administrator stores in Vault for each person. With a service credential, upstream logs see the gateway and the audit log is the per-user record. Exchanging the caller's token at the identity provider for one per upstream (RFC 8693) is not built. stdio upstreams take only a service credential |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
-| Leases | Dynamic secrets are read and their lease caps the cache, but leases are not revoked when unused; keep their TTLs short |
+| Leases | A dynamic secret's lease caps the cache, read from the envelope (HashiCorp Vault) or from inside `data` (uBixVault). A lease the gateway stops using is revoked: after the longest upstream timeout when the cache replaces or drops it, when a stdio process holding it stops, and at shutdown. A revoke that fails is logged and the lease expires on its own. A gateway that is killed revokes nothing |
 | Requests to the client | Elicitation, sampling and roots pass through only between a 2026-07-28 client and a 2026-07-28 upstream, when a rule allows them. Clients and upstreams on 2025-11-25 are refused them. Without a shared `request_state_key_file`, a retry must reach the same replica |
 | Identity | OIDC JWTs. No SAML or SCIM |
 | Not included | Admin UI, multi-tenancy, response filtering, plugins, rate limiting beyond the per-user limit |
@@ -384,8 +447,8 @@ that way: it should be readable in an afternoon. Start with
 | `test/` | End-to-end tests with an in-process IdP, Vault and upstreams over both transports and both protocol revisions |
 
 Built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk). Its
-only other direct dependencies are a YAML parser and the Prometheus client; JWT
-validation uses the standard library.
+other direct dependencies are a YAML parser, the Prometheus client and the OpenTelemetry
+SDK with its OTLP/HTTP exporter; JWT validation uses the standard library.
 
 Releases and versioning: [docs/RELEASING.md](docs/RELEASING.md),
 [docs/VERSIONING.md](docs/VERSIONING.md). Changes: [CHANGELOG.md](CHANGELOG.md).

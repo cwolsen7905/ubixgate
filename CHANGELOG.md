@@ -17,6 +17,21 @@ interface is listed under **Interface changes** in the release that makes it.
   10 minutes, and is refused for anyone else (`invalid-request-state`). Clients and upstreams on
   2025-11-25 are refused them. `request_state_key_file` shares the sealing key across
   replicas.
+- A tamper-evident audit log: with `audit.chain_key_file`, each record carries an
+  HMAC chained over the one before, continued across restarts, and
+  `ubixgate audit verify` names the first edited, removed, inserted or reordered line.
+  Lines deleted from the end are not detectable from the file alone.
+- Unused dynamic-secret leases are revoked: when the cache replaces or drops a
+  credential (after a grace period of the longest upstream timeout, so calls already
+  sent can finish), when a stdio process holding one stops, at shutdown, and at once
+  when a lease is issued without the configured field.
+- OpenTelemetry tracing, off by default: a `tracing` block exports spans over OTLP/HTTP
+  for the request, auth, the call, policy, credential and upstream steps, continues the
+  caller's W3C trace context and passes it to HTTP upstreams. Spans carry no argument
+  values, credentials or caller identity.
+- `ubixgate policy explain`: the decision, deciding rule, what the caller is shown,
+  whether the tool is listed and which arguments are logged, for a user, groups, client,
+  tool and arguments, without a live call. It runs the same decision step as the gateway.
 - Per-user upstream credentials: an HTTP upstream's `credential.path` may contain
   `{user}`, so each call uses the caller's own secret and the upstream sees the person.
   A caller without one is refused (status `denied`, reason `credential_unavailable`),
@@ -28,12 +43,21 @@ interface is listed under **Interface changes** in the release that makes it.
 - The README's demo transcript is now the Docker Compose demo's real output, as CI
   captures it, instead of the loopback runner's.
 
+### Fixed
+
+- A dynamic secret's lease now caps the credential cache against uBixVault, which sends
+  `lease_id` and `lease_duration` inside `data` rather than in the envelope. Before, the
+  configured TTL applied, so a lease shorter than it could be served after it expired.
+
 ### Interface changes
 
 - Policy rules take `client_requests`. A rule with it decides only those requests; a
   rule without it, as before, decides only calls.
 - Audit records gain `client_request`, the statuses `input_required` and `not_sent`, and
   the reasons `client_request_denied` and `client_protocol`.
+- Audit records may end with a `chain` field. Config: `audit.chain_key_file`.
+- Config: `tracing` (`endpoint`, `service_name`, `sample_ratio`).
+- New dependency: the OpenTelemetry Go SDK and its OTLP/HTTP trace exporter.
 - Config: `credential.catalog_path`. A `{user}` path is rejected on stdio upstreams.
 - Upstreams no longer see the gateway declare the roots capability; it declares no
   client capabilities of its own.

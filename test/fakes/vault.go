@@ -2,6 +2,7 @@ package fakes
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	pathpkg "path"
@@ -19,13 +20,39 @@ type Vault struct {
 
 	mu      sync.Mutex
 	secrets map[string]map[string]any // KV v2 path ("secret/data/x") to data
+	dynamic map[string]dynamicSecret  // path to a secret issued with a new lease per read
+	revoked []string
+	leases  int
 	reads   int
 	down    bool
 }
 
+type dynamicSecret struct {
+	data     map[string]any
+	ttl      int
+	topLevel bool // HashiCorp Vault's envelope; otherwise inside data, as uBixVault sends it
+}
+
+// PutDynamic serves a dynamic secret at path: each read issues a new lease ("lease-N")
+// of ttl seconds. With topLevel the lease is in the envelope, as HashiCorp Vault sends
+// it; otherwise inside data, as uBixVault's database engine does.
+func (v *Vault) PutDynamic(path string, data map[string]any, ttl int, topLevel bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.dynamic[path] = dynamicSecret{data: data, ttl: ttl, topLevel: topLevel}
+}
+
+// Revoked reports the lease IDs revoked so far, in order.
+func (v *Vault) Revoked() []string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]string(nil), v.revoked...)
+}
+
 // NewVault starts a fake Vault with one AppRole.
 func NewVault() *Vault {
-	v := &Vault{RoleID: "role-1", SecretID: "secret-1", Token: "hvs.fake-gateway-token", secrets: map[string]map[string]any{}}
+	v := &Vault{RoleID: "role-1", SecretID: "secret-1", Token: "hvs.fake-gateway-token", secrets: map[string]map[string]any{},
+		dynamic: map[string]dynamicSecret{}}
 	v.Server = httptest.NewServer(v)
 	return v
 }
@@ -83,6 +110,26 @@ func (v *Vault) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(200, map[string]any{"data": map[string]any{"ttl": 3600}})
 	case path == "auth/token/renew-self":
 		reply(200, map[string]any{"auth": map[string]any{"client_token": v.Token, "lease_duration": 3600}})
+	case path == "sys/leases/revoke" && r.Method == http.MethodPut:
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		v.revoked = append(v.revoked, body["lease_id"])
+		w.WriteHeader(http.StatusNoContent)
+	case v.dynamic[path].data != nil:
+		d := v.dynamic[path]
+		v.leases++
+		v.reads++
+		id := fmt.Sprintf("lease-%d", v.leases)
+		data := map[string]any{}
+		for k, val := range d.data {
+			data[k] = val
+		}
+		if d.topLevel {
+			reply(200, map[string]any{"lease_id": id, "lease_duration": d.ttl, "data": data})
+			return
+		}
+		data["lease_id"], data["lease_duration"] = id, d.ttl
+		reply(200, map[string]any{"data": data})
 	default:
 		data, ok := v.secrets[path]
 		if !ok {

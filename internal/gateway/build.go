@@ -20,6 +20,11 @@ import (
 	"github.com/ubixsys/ubixgate/internal/upstream"
 )
 
+// Policy builds the decider the gateway runs for cfg.
+func Policy(cfg *config.Config) (*policy.Rules, error) {
+	return policy.New(cfg.Policy.Rules, serverNames(cfg))
+}
+
 // loadStateKey reads the request state key, or makes one for this process when path is
 // empty, in which case a retry must reach the same replica.
 func loadStateKey(path string) ([]byte, error) {
@@ -28,13 +33,19 @@ func loadStateKey(path string) ([]byte, error) {
 		_, err := rand.Read(key)
 		return key, err
 	}
+	return ReadKey(path)
+}
+
+// ReadKey reads an HMAC key file. A key shorter than 32 bytes after trimming is refused:
+// an empty one would let anyone forge what it protects.
+func ReadKey(path string) ([]byte, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("request state key: %w", err)
+		return nil, fmt.Errorf("key file: %w", err)
 	}
 	key := []byte(strings.TrimSpace(string(b)))
-	if len(key) < 32 { // an empty key would let anyone forge sealed state
-		return nil, fmt.Errorf("request state key: %s holds %d bytes, need at least 32", path, len(key))
+	if len(key) < 32 {
+		return nil, fmt.Errorf("key file %s holds %d bytes, need at least 32", path, len(key))
 	}
 	return key, nil
 }
@@ -45,10 +56,13 @@ type Runtime struct {
 	Handler http.Handler
 	cfg     *config.Config
 	vault   *secrets.Client
+	creds   *secrets.Cache
 	ups     []*upstream.Upstream
 	sink    *audit.Sink
 	metrics *ops.Metrics
 	log     *slog.Logger
+
+	stopTracing func(context.Context) error
 }
 
 // RefreshEvery is how often upstream catalogs are re-listed, in case an upstream does not
@@ -59,6 +73,13 @@ var RefreshEvery = 5 * time.Minute
 // upstreams; Start connects them in the background, and /readyz reports when all are up.
 func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime, error) {
 	rt := &Runtime{cfg: cfg, metrics: ops.NewMetrics(), log: log}
+	if t := cfg.Tracing; t != nil {
+		stop, err := ops.Tracing(ctx, t.Endpoint, t.ServiceName, t.SampleRatio)
+		if err != nil {
+			return nil, err
+		}
+		rt.stopTracing = stop
+	}
 
 	var authn identity.Authenticator
 	var issuers []string
@@ -86,16 +107,27 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 			return nil, fmt.Errorf("vault login: %w", err)
 		}
 		creds = secrets.NewCache(rt.vault)
+		creds.Log = log
+		for _, u := range cfg.Upstreams { // let calls sent with a replaced credential finish
+			creds.Grace = max(creds.Grace, u.Timeout)
+		}
+		rt.creds = creds
 	}
 
-	pol, err := policy.New(cfg.Policy.Rules, serverNames(cfg))
+	pol, err := Policy(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	switch cfg.Audit.Sink {
 	case "file":
-		if rt.sink, err = audit.OpenFile(cfg.Audit.Path); err != nil {
+		var chainKey []byte
+		if cfg.Audit.ChainKeyFile != "" {
+			if chainKey, err = ReadKey(cfg.Audit.ChainKeyFile); err != nil {
+				return nil, fmt.Errorf("audit chain: %w", err)
+			}
+		}
+		if rt.sink, err = audit.OpenFile(cfg.Audit.Path, chainKey); err != nil {
 			return nil, err
 		}
 	default:
@@ -190,7 +222,15 @@ func (rt *Runtime) Close() error {
 	for _, up := range rt.ups {
 		errs = append(errs, up.Close())
 	}
+	if rt.creds != nil {
+		rt.creds.Close() // revoke the leases nothing uses any more
+	}
 	errs = append(errs, rt.sink.Close())
+	if rt.stopTracing != nil { // flush the last spans
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		errs = append(errs, rt.stopTracing(ctx))
+	}
 	return errors.Join(errs...)
 }
 
