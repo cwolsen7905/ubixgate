@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ubixsys/ubixgate/internal/audit"
 )
 
 func TestRun(t *testing.T) {
@@ -61,5 +65,38 @@ func TestPolicyExplain(t *testing.T) {
 				t.Errorf("%q: output lacks %q:\n%s", c.args, w, out.String())
 			}
 		}
+	}
+}
+
+func TestAuditVerify(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "key")
+	log := filepath.Join(dir, "audit.jsonl")
+	_ = os.WriteFile(key, []byte("0123456789abcdef0123456789abcdef\n"), 0o600)
+	k, _ := os.ReadFile(key)
+	s, err := audit.OpenFile(log, []byte(strings.TrimSpace(string(k))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []string{"alice", "bob", "carol"} {
+		_ = s.Write(audit.Record{User: u, Tool: "t__x"})
+	}
+	_ = s.Close()
+	verify := func() (int, string) {
+		var out, errb bytes.Buffer
+		code := run([]string{"audit", "verify", "-key", key, log}, &out, &errb)
+		return code, out.String() + errb.String()
+	}
+	if code, out := verify(); code != 0 || !strings.Contains(out, "ok, 3 records") {
+		t.Fatalf("intact: %d %s", code, out)
+	}
+	b, _ := os.ReadFile(log)
+	_ = os.WriteFile(log, bytes.Replace(b, []byte(`"user":"bob"`), []byte(`"user":"eve"`), 1), 0o600)
+	if code, out := verify(); code != 1 || !strings.Contains(out, "line 2: chain does not follow") || !strings.Contains(out, "Line 1 verifies.") {
+		t.Errorf("tampered: %d %s", code, out)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"audit", "verify", "-key", filepath.Join(dir, "missing"), log}, &out, &errb); code != 1 {
+		t.Errorf("missing key: exit %d", code)
 	}
 }

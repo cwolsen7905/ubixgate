@@ -28,6 +28,8 @@ import (
 	"github.com/ubixsys/ubixgate/test/fakes"
 )
 
+const chainKey = "integration-test-chain-key-32-bytes!"
+
 // The stdio upstream is this test binary, started again with this variable set.
 const stdioEnv = "UBIXGATE_FAKE_STDIO"
 
@@ -134,9 +136,9 @@ upstreams:
     command: [%q]
     env: { %s: "1" }
     credential: { path: secret/data/mcp/stdio, field: token, env: STDIO_TOKEN }
-audit: { sink: file, path: %s }
+audit: { sink: file, path: %s, chain_key_file: %s }
 `, e.url, e.idp.Issuer, e.idp.JWKSURL(), e.vault.Server.URL, write("role", e.vault.RoleID),
-		write("secret", e.vault.SecretID), up.URL, up.URL, exe, stdioEnv, e.audit) + policyYAML
+		write("secret", e.vault.SecretID), up.URL, up.URL, exe, stdioEnv, e.audit, write("chain", chainKey)) + policyYAML
 	cfg, err := config.Parse([]byte(cfgYAML))
 	if err != nil {
 		t.Fatal(err)
@@ -338,6 +340,12 @@ func TestGateway(t *testing.T) {
 			}
 			if a := recs[1].Args; a["value"] != audit.Redacted {
 				t.Errorf("argument values must be redacted unless the rule keeps them: %v", a)
+			}
+			// The gateway chains every record (audit.chain_key_file).
+			f, _ := os.Open(e.audit)
+			defer f.Close()
+			if n, _, err := audit.Verify(f, []byte(chainKey)); err != nil || n != 6 {
+				t.Errorf("audit chain: %d records, %v", n, err)
 			}
 		})
 	}

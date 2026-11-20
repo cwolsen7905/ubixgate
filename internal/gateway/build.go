@@ -33,13 +33,19 @@ func loadStateKey(path string) ([]byte, error) {
 		_, err := rand.Read(key)
 		return key, err
 	}
+	return ReadKey(path)
+}
+
+// ReadKey reads an HMAC key file. A key shorter than 32 bytes after trimming is refused:
+// an empty one would let anyone forge what it protects.
+func ReadKey(path string) ([]byte, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("request state key: %w", err)
+		return nil, fmt.Errorf("key file: %w", err)
 	}
 	key := []byte(strings.TrimSpace(string(b)))
-	if len(key) < 32 { // an empty key would let anyone forge sealed state
-		return nil, fmt.Errorf("request state key: %s holds %d bytes, need at least 32", path, len(key))
+	if len(key) < 32 {
+		return nil, fmt.Errorf("key file %s holds %d bytes, need at least 32", path, len(key))
 	}
 	return key, nil
 }
@@ -100,7 +106,13 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 
 	switch cfg.Audit.Sink {
 	case "file":
-		if rt.sink, err = audit.OpenFile(cfg.Audit.Path); err != nil {
+		var chainKey []byte
+		if cfg.Audit.ChainKeyFile != "" {
+			if chainKey, err = ReadKey(cfg.Audit.ChainKeyFile); err != nil {
+				return nil, fmt.Errorf("audit chain: %w", err)
+			}
+		}
+		if rt.sink, err = audit.OpenFile(cfg.Audit.Path, chainKey); err != nil {
 			return nil, err
 		}
 	default:
