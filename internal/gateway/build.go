@@ -56,10 +56,13 @@ type Runtime struct {
 	Handler http.Handler
 	cfg     *config.Config
 	vault   *secrets.Client
+	creds   *secrets.Cache
 	ups     []*upstream.Upstream
 	sink    *audit.Sink
 	metrics *ops.Metrics
 	log     *slog.Logger
+
+	stopTracing func(context.Context) error
 }
 
 // RefreshEvery is how often upstream catalogs are re-listed, in case an upstream does not
@@ -70,6 +73,13 @@ var RefreshEvery = 5 * time.Minute
 // upstreams; Start connects them in the background, and /readyz reports when all are up.
 func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime, error) {
 	rt := &Runtime{cfg: cfg, metrics: ops.NewMetrics(), log: log}
+	if t := cfg.Tracing; t != nil {
+		stop, err := ops.Tracing(ctx, t.Endpoint, t.ServiceName, t.SampleRatio)
+		if err != nil {
+			return nil, err
+		}
+		rt.stopTracing = stop
+	}
 
 	var authn identity.Authenticator
 	var issuers []string
@@ -97,6 +107,11 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 			return nil, fmt.Errorf("vault login: %w", err)
 		}
 		creds = secrets.NewCache(rt.vault)
+		creds.Log = log
+		for _, u := range cfg.Upstreams { // let calls sent with a replaced credential finish
+			creds.Grace = max(creds.Grace, u.Timeout)
+		}
+		rt.creds = creds
 	}
 
 	pol, err := Policy(cfg)
@@ -207,7 +222,15 @@ func (rt *Runtime) Close() error {
 	for _, up := range rt.ups {
 		errs = append(errs, up.Close())
 	}
+	if rt.creds != nil {
+		rt.creds.Close() // revoke the leases nothing uses any more
+	}
 	errs = append(errs, rt.sink.Close())
+	if rt.stopTracing != nil { // flush the last spans
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		errs = append(errs, rt.stopTracing(ctx))
+	}
 	return errors.Join(errs...)
 }
 

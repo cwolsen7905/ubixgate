@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,10 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/ubixsys/ubixgate/internal/audit"
 	"github.com/ubixsys/ubixgate/internal/config"
@@ -51,6 +56,7 @@ type env struct {
 	tickets *fakes.Tickets
 	audit   string
 	cfg     *config.Config
+	rt      *gateway.Runtime
 }
 
 const policyYAML = `
@@ -94,7 +100,8 @@ func start(t *testing.T, ticketVersions []string) *env {
 	t.Cleanup(e.idp.Server.Close)
 	t.Cleanup(e.vault.Server.Close)
 	e.vault.Put("secret/data/mcp/tickets", map[string]any{"token": "svc-secret-1"})
-	e.vault.Put("secret/data/mcp/stdio", map[string]any{"token": "stdio-secret-1"})
+	// A dynamic secret, leased as uBixVault's database engine leases them.
+	e.vault.PutDynamic("secret/data/mcp/stdio", map[string]any{"token": "stdio-secret-1"}, 3600, false)
 	e.vault.Put("secret/data/mcp/mine/carol@example.com", map[string]any{"token": "carol-own-token"})
 	e.vault.Put("secret/data/mcp/shared@example.com", map[string]any{"token": "svc-secret-1"})
 	up := httptest.NewServer(e.tickets.Handler())
@@ -151,6 +158,7 @@ audit: { sink: file, path: %s, chain_key_file: %s }
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
+	e.rt = rt
 	rt.Start(ctx)
 	gw.Config.Handler = rt.Handler
 	gw.Start()
@@ -601,5 +609,71 @@ func TestExplainMatchesGateway(t *testing.T) {
 		if dec.Rule != recs[i].Rule || string(dec.Effect) != recs[i].Decision {
 			t.Errorf("%s: explain says %s by %s, the gateway %s by %s", c.tool, dec.Effect, dec.Rule, recs[i].Decision, recs[i].Rule)
 		}
+	}
+}
+
+// A stdio process holds its dynamic secret's lease while it runs. When the gateway
+// stops, the process ends and the lease nothing uses any more is revoked.
+func TestLeaseRevokedAtShutdown(t *testing.T) {
+	e := start(t, nil)
+	alice := e.connect(t, e.token("alice", "developers"), "")
+	if text, _ := call(t, alice, "stdio__env_has", map[string]any{"name": "STDIO_TOKEN", "value": "stdio-secret-1"}); !strings.Contains(text, "match=true") {
+		t.Fatalf("stdio credential: %q", text)
+	}
+	if got := e.vault.Revoked(); len(got) != 0 {
+		t.Fatalf("revoked while in use: %v", got)
+	}
+	_ = e.rt.Close()
+	if got := e.vault.Revoked(); !slices.Equal(got, []string{"lease-1"}) {
+		t.Errorf("revoked at shutdown: %v, want [lease-1]", got)
+	}
+}
+
+// Every call is traced: the request, auth, the call, policy, credential and upstream,
+// with the call's outcome on its span and no argument value anywhere.
+func TestTracing(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	otel.SetTextMapPropagator(propagation.TraceContext{}) // as ops.Tracing sets it
+	t.Cleanup(func() { otel.SetTracerProvider(prev); otel.SetTextMapPropagator(prevProp) })
+
+	e := start(t, nil)
+	alice := e.connect(t, e.token("alice", "developers"), "")
+	call(t, alice, "tickets__ticket_create", map[string]any{"project": "myorg/web", "title": "secret plan"})
+
+	byName := map[string]sdktrace.ReadOnlySpan{}
+	for _, s := range rec.Ended() {
+		byName[s.Name()] = s
+		for _, a := range s.Attributes() {
+			if v := a.Value.String(); strings.Contains(v, "secret plan") || strings.Contains(v, "myorg/web") || strings.Contains(v, "alice") {
+				t.Errorf("span %s attribute %s carries a value it must not: %q", s.Name(), a.Key, v)
+			}
+		}
+	}
+	callSpan := byName["tools/call"]
+	for _, name := range []string{"mcp POST", "auth", "tools/call", "policy", "credential", "upstream"} {
+		s, ok := byName[name]
+		if !ok {
+			t.Errorf("no %q span; got %v", name, maps.Keys(byName))
+			continue
+		}
+		if callSpan != nil && s.SpanContext().TraceID() != callSpan.SpanContext().TraceID() {
+			t.Errorf("%q is not in the call's trace", name)
+		}
+	}
+	if callSpan != nil {
+		attrs := map[string]string{}
+		for _, a := range callSpan.Attributes() {
+			attrs[string(a.Key)] = a.Value.String()
+		}
+		if attrs["ubixgate.rule"] != "devs-tickets-own-project" || attrs["ubixgate.status"] != "ok" || attrs["ubixgate.request_id"] == "" {
+			t.Errorf("call span attributes: %v", attrs)
+		}
+	}
+	// The upstream received W3C trace context for the same trace.
+	if callSpan != nil && !e.tickets.SawHeaderValue(callSpan.SpanContext().TraceID().String()) {
+		t.Error("no traceparent for the call's trace reached the upstream")
 	}
 }

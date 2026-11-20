@@ -169,6 +169,7 @@ upstreams:
 limits: { per_user_per_minute: 120 }       # in memory, per replica
 request_state_key_file: /run/state_key     # optional; see "Requests to the client" below
 audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }   # or sink: stdout
+# tracing: { endpoint: http://collector:4318, sample_ratio: 0.1 }   # OpenTelemetry; off when absent
 # audit.chain_key_file: /run/audit_key   # chain each record to the one before; see "Audit records"
 ```
 
@@ -343,8 +344,18 @@ docker build -t ubixgate .                   # distroless, non-root; or use the 
 | `/readyz` | Every upstream connected and listed, and Vault healthy; otherwise 503 naming what is not |
 | `/metrics` | Prometheus: `ubixgate_tool_calls_total{server,decision,status}`, `ubixgate_tool_call_duration_seconds`, `ubixgate_auth_failures_total`, `ubixgate_upstream_up` |
 
+With a `tracing` block, each MCP request is traced with OpenTelemetry and exported over
+OTLP/HTTP: spans for the request, `auth`, `tools/call`, `policy`, `credential` (HTTP
+upstreams) and `upstream`. The call span carries the tool, server, decision, rule,
+status and the audit `request_id`. No span carries argument values, credentials or the
+caller's identity; join on `request_id` to find who. A caller's W3C `traceparent` is
+continued and its sampling decision followed, and HTTP upstreams receive `traceparent`
+for the gateway's span. `sample_ratio` (default 1) applies to new traces. Tracing is
+off without the block, and then no trace context is read or passed on.
+
 Logs are JSON on stderr (`log/slog`). Grant the gateway's Vault identity read access to
-exactly the configured credential paths, nothing else.
+exactly the configured credential paths, plus `update` on `sys/leases/revoke` if any of
+them is a dynamic secret, nothing else.
 
 In Kubernetes, use the Helm chart in [deploy/charts/ubixgate](deploy/charts/ubixgate/README.md).
 It takes the config above as a value, exposes only the MCP endpoint and its metadata on
@@ -408,7 +419,7 @@ policy allows can still do everything that call can do.
 | Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
 | Upstream credentials | One service credential per upstream, or, for HTTP upstreams, one per user read from a `{user}` path, which an administrator stores in Vault for each person. With a service credential, upstream logs see the gateway and the audit log is the per-user record. Exchanging the caller's token at the identity provider for one per upstream (RFC 8693) is not built. stdio upstreams take only a service credential |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
-| Leases | Dynamic secrets are read and their lease caps the cache, but leases are not revoked when unused; keep their TTLs short |
+| Leases | A dynamic secret's lease caps the cache, read from the envelope (HashiCorp Vault) or from inside `data` (uBixVault). A lease the gateway stops using is revoked: after the longest upstream timeout when the cache replaces or drops it, when a stdio process holding it stops, and at shutdown. A revoke that fails is logged and the lease expires on its own. A gateway that is killed revokes nothing |
 | Requests to the client | Elicitation, sampling and roots pass through only between a 2026-07-28 client and a 2026-07-28 upstream, when a rule allows them. Clients and upstreams on 2025-11-25 are refused them. Without a shared `request_state_key_file`, a retry must reach the same replica |
 | Identity | OIDC JWTs. No SAML or SCIM |
 | Not included | Admin UI, multi-tenancy, response filtering, plugins, rate limiting beyond the per-user limit |
@@ -436,8 +447,8 @@ that way: it should be readable in an afternoon. Start with
 | `test/` | End-to-end tests with an in-process IdP, Vault and upstreams over both transports and both protocol revisions |
 
 Built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk). Its
-only other direct dependencies are a YAML parser and the Prometheus client; JWT
-validation uses the standard library.
+other direct dependencies are a YAML parser, the Prometheus client and the OpenTelemetry
+SDK with its OTLP/HTTP exporter; JWT validation uses the standard library.
 
 Releases and versioning: [docs/RELEASING.md](docs/RELEASING.md),
 [docs/VERSIONING.md](docs/VERSIONING.md). Changes: [CHANGELOG.md](CHANGELOG.md).
