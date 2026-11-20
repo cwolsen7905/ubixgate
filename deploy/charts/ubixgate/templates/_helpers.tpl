@@ -46,7 +46,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/* Image reference; the tag defaults to the chart's appVersion. */}}
 {{- define "ubixgate.image" -}}
-{{- $repo := required "image.repository is required: no official image is published yet, so build the Dockerfile and push it to your registry" .Values.image.repository -}}
+{{- $repo := required "image.repository must not be empty (the default is ghcr.io/ubixsys/ubixgate)" .Values.image.repository -}}
 {{- printf "%s:%s" $repo (.Values.image.tag | default .Chart.AppVersion) -}}
 {{- end -}}
 

@@ -34,7 +34,7 @@ refuse() {
 	fi
 	grep -q "$want" "$out/err" || { echo "chart-check: expected an error naming $want, got:"; cat "$out/err"; exit 1; }
 }
-refuse image.repository --set config.public_url=https://mcp.example.com/mcp
+refuse image.repository --set config.public_url=https://mcp.example.com/mcp --set image.repository=
 refuse config.public_url --set image.repository=r
 refuse ingress.tlsSecret -f "$values" --set ingress.tlsSecret=
 

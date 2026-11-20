@@ -101,9 +101,70 @@ jobs:
             dist/SHA256SUMS.sigstore.json
           if-no-files-found: error
 
+  # The container image, for the Helm chart and anyone running a container. Built from the
+  # repo's Dockerfile for amd64 and arm64, tagged with the version (no leading v), and
+  # signed keyless like SHA256SUMS. Needs build, so it only runs where build does: on
+  # ubixsys/ubixgate, for a tag on main that passed make check.
+  image:
+    name: Build, push and sign the container image
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing of the image via GitHub OIDC
+    env:
+      IMAGE: ghcr.io/ubixsys/ubixgate
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 0.1.0-beta.1 for v0.1.0-beta.1; also 0.1 and latest for a release without a
+      # pre-release suffix.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=uBixGate
+            org.opencontainers.image.description=MCP gateway: one authenticated endpoint for many MCP servers
+            org.opencontainers.image.licenses=BSD-3-Clause
+
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.TAG }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      # Bound to the digest; verify with cosign verify (docs/RELEASING.md).
+      - name: Sign the image (keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
   publish:
     name: Publish the GitHub Release
-    needs: build
+    needs: [build, image] # no release without its image
     runs-on: ubuntu-latest
     permissions:
       contents: write
