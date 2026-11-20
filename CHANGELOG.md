@@ -17,6 +17,9 @@ interface is listed under **Interface changes** in the release that makes it.
   10 minutes, and is refused for anyone else (`invalid-request-state`). Clients and upstreams on
   2025-11-25 are refused them. `request_state_key_file` shares the sealing key across
   replicas.
+- `ubixgate policy explain`: the decision, deciding rule, what the caller is shown,
+  whether the tool is listed and which arguments are logged, for a user, groups, client,
+  tool and arguments, without a live call. It runs the same decision step as the gateway.
 - Per-user upstream credentials: an HTTP upstream's `credential.path` may contain
   `{user}`, so each call uses the caller's own secret and the upstream sees the person.
   A caller without one is refused (status `denied`, reason `credential_unavailable`),

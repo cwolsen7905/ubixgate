@@ -20,6 +20,11 @@ import (
 	"github.com/ubixsys/ubixgate/internal/upstream"
 )
 
+// Policy builds the decider the gateway runs for cfg.
+func Policy(cfg *config.Config) (*policy.Rules, error) {
+	return policy.New(cfg.Policy.Rules, serverNames(cfg))
+}
+
 // loadStateKey reads the request state key, or makes one for this process when path is
 // empty, in which case a retry must reach the same replica.
 func loadStateKey(path string) ([]byte, error) {
@@ -88,7 +93,7 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Runtime,
 		creds = secrets.NewCache(rt.vault)
 	}
 
-	pol, err := policy.New(cfg.Policy.Rules, serverNames(cfg))
+	pol, err := Policy(cfg)
 	if err != nil {
 		return nil, err
 	}

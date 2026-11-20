@@ -220,24 +220,13 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 	server, tool, _ := strings.Cut(req.Params.Name, Sep)
 	rec.Server = server
 	pr := policy.Request{Principal: p, Server: server, Tool: tool, Args: args}
-	dec, err := g.decider().Decide(ctx, pr)
-	if err != nil {
-		return deny(policy.DefaultDeny, policy.DefaultDeny)
-	}
 	r, known := g.lookup(req.Params.Name)
-	if !known {
-		// Report the rule that would deny this name if it existed, so probing for hidden
-		// tools learns nothing the caller's catalog does not already show. The audit
-		// record keeps the truth.
-		shown := policy.UnknownTool
-		if !dec.Allowed() {
-			shown = dec.Rule
-		}
-		rec.Server = "" // keep made-up names out of metric labels
-		return deny(policy.UnknownTool, shown)
-	}
+	dec, shown := Decide(ctx, g.decider(), pr, known)
 	if !dec.Allowed() {
-		return deny(dec.Rule, dec.Rule)
+		if !known {
+			rec.Server = "" // keep made-up names out of metric labels
+		}
+		return deny(dec.Rule, shown)
 	}
 	if !g.limit.allow(p.User) {
 		return deny(RuleLimit, RuleLimit)
@@ -293,6 +282,26 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 		rec.Status = audit.StatusOK
 	}
 	return finish(res)
+}
+
+// Decide is the policy step of every call, and of `ubixgate policy explain`. known says
+// whether the tool exists. It returns the decision, whose rule the audit record shows,
+// and the rule the caller is shown. For an unknown tool that is the rule that would
+// deny the name if it existed, so probing for hidden tools learns nothing the caller's
+// catalog does not already show.
+func Decide(ctx context.Context, d policy.Decider, pr policy.Request, known bool) (policy.Decision, string) {
+	dec, err := d.Decide(ctx, pr)
+	if err != nil {
+		dec = policy.Decision{Effect: policy.Deny, Rule: policy.DefaultDeny}
+	}
+	if !known {
+		shown := policy.UnknownTool
+		if !dec.Allowed() {
+			shown = dec.Rule
+		}
+		return policy.Decision{Effect: policy.Deny, Rule: policy.UnknownTool}, shown
+	}
+	return dec, dec.Rule
 }
 
 func (g *Gateway) write(rec audit.Record) {

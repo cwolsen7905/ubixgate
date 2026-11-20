@@ -24,6 +24,7 @@ import (
 	"github.com/ubixsys/ubixgate/internal/audit"
 	"github.com/ubixsys/ubixgate/internal/config"
 	"github.com/ubixsys/ubixgate/internal/gateway"
+	"github.com/ubixsys/ubixgate/internal/policy"
 	"github.com/ubixsys/ubixgate/test/fakes"
 )
 
@@ -47,6 +48,7 @@ type env struct {
 	vault   *fakes.Vault
 	tickets *fakes.Tickets
 	audit   string
+	cfg     *config.Config
 }
 
 const policyYAML = `
@@ -139,6 +141,7 @@ audit: { sink: file, path: %s }
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.cfg = cfg
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	rt, err := gateway.Build(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -555,5 +558,40 @@ func TestPerUserCredentials(t *testing.T) {
 	want := []string{"ok/", "denied/credential_unavailable", "denied/credential_unavailable"}
 	if !slices.Equal(got, want) {
 		t.Errorf("audit = %v, want %v", got, want)
+	}
+}
+
+// policy explain gives the decision the live gateway made, for the same calls, because
+// both run gateway.Decide over the same rules.
+func TestExplainMatchesGateway(t *testing.T) {
+	e := start(t, nil)
+	alice := e.connect(t, e.token("alice", "developers"), "")
+	bob := e.connect(t, e.token("bob", "contractors"), "")
+	calls := []struct {
+		s     *mcp.ClientSession
+		p     policy.Principal
+		tool  string
+		args  map[string]any
+		known bool
+	}{
+		{alice, policy.Principal{User: "alice@example.com", Groups: []string{"developers"}}, "tickets__ticket_create", map[string]any{"project": "myorg/web"}, true},
+		{alice, policy.Principal{User: "alice@example.com", Groups: []string{"developers"}}, "tickets__ticket_delete", map[string]any{"project": "other/x"}, true},
+		{bob, policy.Principal{User: "bob@example.com", Groups: []string{"contractors"}}, "tickets__ticket_delete", map[string]any{"project": "myorg/web"}, true},
+		{bob, policy.Principal{User: "bob@example.com", Groups: []string{"contractors"}}, "tickets__no_such_tool", nil, false},
+	}
+	pol, err := gateway.Policy(e.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range calls {
+		call(t, c.s, c.tool, c.args)
+	}
+	recs := readAudit(t, e.audit)
+	for i, c := range calls {
+		server, tool, _ := strings.Cut(c.tool, gateway.Sep)
+		dec, _ := gateway.Decide(context.Background(), pol, policy.Request{Principal: c.p, Server: server, Tool: tool, Args: c.args}, c.known)
+		if dec.Rule != recs[i].Rule || string(dec.Effect) != recs[i].Decision {
+			t.Errorf("%s: explain says %s by %s, the gateway %s by %s", c.tool, dec.Effect, dec.Rule, recs[i].Decision, recs[i].Rule)
+		}
 	}
 }

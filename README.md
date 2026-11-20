@@ -219,6 +219,27 @@ policy:
 | Unknown tools | Answered as the policy would answer that name, so probing reveals nothing beyond your own list. The audit log records `unknown-tool`. |
 | Reload | `SIGHUP` reloads the policy atomically. A file that fails validation is logged and ignored. Other changes need a restart. |
 
+### Why was I denied?
+
+`ubixgate policy explain` answers that without a live call. It runs the gateway's own
+decision step on the config's rules and prints the decision, the rule, what the caller
+was shown, whether the tool is listed for them, and which arguments are logged. It exits
+0 when allowed and 1 when denied.
+
+```sh
+$ ubixgate policy explain -config examples/demo/gateway.yaml -user alice -groups developers \
+    -client claude-code -tool tickets__ticket_delete -arg project=other/repo
+decision: deny
+rule:     default-deny
+listed:   true
+Offline: a tool on a configured upstream is assumed to exist; the per-user limit, credentials and the upstream are not checked.
+```
+
+Give `-user`, `-groups` and `-client` as the token's claims map them. `-client-request
+elicitation` (or `sampling`, `roots`) asks about a request to the client instead of the
+call. It cannot see the upstream's live tool list: a misspelled tool on a configured
+upstream is judged as if it existed.
+
 ### Requests to the client
 
 While it runs a tool, an upstream can ask the caller's client for something: to show
@@ -282,6 +303,7 @@ name). They are counted in `ubixgate_auth_failures_total` and logged.
 ```sh
 make build                                   # bin/ubixgate
 bin/ubixgate check ubixgate.yaml
+bin/ubixgate policy explain -user alice@example.com -groups developers -tool tickets__ticket_list
 bin/ubixgate serve -config ubixgate.yaml     # -log-level debug for more
 docker build -t ubixgate .                   # distroless, non-root; or use the released
                                              # ghcr.io/ubixsys/ubixgate:<version>

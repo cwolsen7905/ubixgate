@@ -116,10 +116,7 @@ func (g *Gateway) needsInput(ctx context.Context, rec audit.Record, pr policy.Re
 		r := rec
 		r.ClientRequest = kindOf(res.InputRequests[id])
 		pr.ClientRequest = r.ClientRequest
-		dec, err := g.decider().Decide(ctx, pr)
-		if err != nil {
-			dec = policy.Decision{Effect: policy.Deny, Rule: policy.DefaultDeny}
-		}
+		dec, _ := Decide(ctx, g.decider(), pr, true)
 		r.Decision, r.Rule, r.Status = string(dec.Effect), dec.Rule, audit.StatusOK
 		if !dec.Allowed() {
 			r.Status = audit.StatusDenied
