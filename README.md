@@ -226,7 +226,8 @@ name). They are counted in `ubixgate_auth_failures_total` and logged.
 make build                                   # bin/ubixgate
 bin/ubixgate check ubixgate.yaml
 bin/ubixgate serve -config ubixgate.yaml     # -log-level debug for more
-docker build -t ubixgate .                   # distroless, non-root
+docker build -t ubixgate .                   # distroless, non-root; or use the released
+                                             # ghcr.io/ubixsys/ubixgate:<version>
 ```
 
 | Endpoint | Purpose |
@@ -242,8 +243,9 @@ exactly the configured credential paths, nothing else.
 
 In Kubernetes, use the Helm chart in [deploy/charts/ubixgate](deploy/charts/ubixgate/README.md).
 It takes the config above as a value, exposes only the MCP endpoint and its metadata on
-the Ingress, and logs in to Vault with the pod's service account. No image is published
-yet, so you build and push one first.
+the Ingress, and logs in to Vault with the pod's service account. It runs the image each
+release publishes, `ghcr.io/ubixsys/ubixgate` (amd64 and arm64, signed with keyless
+cosign; see [docs/RELEASING.md](docs/RELEASING.md#verifying-a-download)).
 
 ## Security model
 

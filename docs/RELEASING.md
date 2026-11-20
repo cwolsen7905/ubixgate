@@ -44,8 +44,17 @@ creates a GitHub Release holding:
 | `SHA256SUMS.sigstore.json` | A keyless cosign signature bundle for `SHA256SUMS` |
 
 The release notes are the tag's section of [CHANGELOG.md](../CHANGELOG.md). A tag with a
-`-` suffix (`-beta.N`, `-rc.N`) is marked as a pre-release. Container images are not
-published yet; build one from the `Dockerfile`.
+`-` suffix (`-beta.N`, `-rc.N`) is marked as a pre-release.
+
+The same run pushes the container image `ghcr.io/ubixsys/ubixgate:<version>` (the tag
+without its `v`, for linux/amd64 and linux/arm64), plus `<major>.<minor>` and `latest`
+for a release without a pre-release suffix, and signs it with keyless cosign. The GitHub
+Release is created only after the image is pushed. Only `ubixsys/ubixgate` publishes: the
+image never goes under any other GitHub account.
+
+**First release only:** a new GitHub package starts out private. After the first image
+is pushed, a maintainer sets `ghcr.io/ubixsys/ubixgate` to public (Package settings,
+Change visibility) and links it to the repository, or `helm install` fails to pull it.
 
 ## Cutting a release
 
@@ -66,6 +75,14 @@ published yet; build one from the `Dockerfile`.
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/ubixsys/ubixgate/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The container image:
+
+```sh
+cosign verify ghcr.io/ubixsys/ubixgate:0.1.0-beta.1 \
   --certificate-identity-regexp '^https://github.com/ubixsys/ubixgate/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

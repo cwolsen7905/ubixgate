@@ -13,8 +13,10 @@ interface is listed under **Interface changes** in the release that makes it.
 - A Helm chart in `deploy/charts/ubixgate`: a Deployment from the gateway's config as a
   value, a Service, and optionally an Ingress that exposes only the MCP endpoint and its
   protected resource metadata, a ServiceMonitor and a PodDisruptionBudget. Config changes
-  roll the pods. No image is published yet; the chart needs one you build. `make
-  chart-check` lints and renders it and validates the rendered config.
+  roll the pods. It runs the published image by default. `make chart-check` lints and
+  renders it and validates the rendered config.
+- A container image, `ghcr.io/ubixsys/ubixgate`, pushed by each release for linux/amd64
+  and linux/arm64 and signed with keyless cosign.
 
 ### Fixed
 

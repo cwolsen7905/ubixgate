@@ -9,22 +9,14 @@ part of CI. Report what you find.
 
 ## Before you install
 
-1. **Build and push an image.** No official image is published yet. Build the `Dockerfile`
-   at the repo root and push it to a registry your cluster can pull from:
-
-   ```sh
-   docker buildx build --platform linux/amd64,linux/arm64 \
-     --build-arg VERSION=0.1.0-beta.1 -t registry.example.com/ubixgate:0.1.0-beta.1 --push .
-   ```
-
-2. **Write the gateway's config** as the `config` value. It is the same file described in
+1. **Write the gateway's config** as the `config` value. It is the same file described in
    the main README, and the chart refuses to render without `config.public_url`. Check it
    first: `ubixgate check ubixgate.yaml`.
 
-3. **Give the gateway a Vault identity**, if any upstream has a credential. With uBixVault
-   in the cluster (the only Vault server this beta is tested against), the Kubernetes login method needs no files: create a
-   Vault role bound to this release's service account (named after the release, for
-   example `ubixgate` in namespace `mcp`) and a policy that can read exactly the configured
+2. **Give the gateway a Vault identity**, if any upstream has a credential. With uBixVault
+   in the cluster (the only Vault server this beta is tested against), the Kubernetes login
+   method needs no files: create a Vault role bound to this release's service account
+   (named after the release, for example `ubixgate` in namespace `mcp`) and a policy that can read exactly the configured
    credential paths. Then:
 
    ```yaml
@@ -43,9 +35,6 @@ helm install ubixgate deploy/charts/ubixgate -n mcp --create-namespace -f my-val
 A minimal `my-values.yaml`:
 
 ```yaml
-image:
-  repository: registry.example.com/ubixgate
-
 config:
   public_url: https://mcp.example.com/mcp
   identity:
@@ -79,6 +68,7 @@ ingress:
 
 | Topic | Behaviour |
 |---|---|
+| Image | `ghcr.io/ubixsys/ubixgate`, published by each release for amd64 and arm64 and signed with keyless cosign (verify it as in the main repo's `docs/RELEASING.md`). The tag defaults to the chart's `appVersion`. To run your own build, push the `Dockerfile`'s image to your registry and set `image.repository` and `image.tag` |
 | `listen` | Set by the chart to `containerPort` (8080). Leave it out of `config` |
 | Changing the config or policy | `helm upgrade` rolls the pods, because the config's checksum is a pod annotation. SIGHUP reload is not used in Kubernetes. With `existingConfigMap`, restart the Deployment yourself |
 | Ingress | Exposes only the MCP endpoint (exact path) and `/.well-known/oauth-protected-resource`. Host and path come from `config.public_url`, so they always match the token audience. TLS ends at the Ingress and a TLS Secret is required |

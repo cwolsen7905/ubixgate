@@ -5,9 +5,9 @@
 replicaCount: 1
 
 image:
-  # No official image is published yet. Build the Dockerfile at the repo root, push it
-  # to your registry and set the repository here; the chart refuses to render without it.
-  repository: ""
+  # Published by each release, for amd64 and arm64, signed with keyless cosign. Point it
+  # at your own registry to run an image you built from the Dockerfile.
+  repository: ghcr.io/ubixsys/ubixgate
   tag: ""            # defaults to .Chart.AppVersion when empty
   pullPolicy: IfNotPresent
 
