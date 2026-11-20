@@ -82,7 +82,8 @@ without a service token stored in Vault, and [uBixShepherd](https://github.com/u
 as a stdio upstream. `demo.sh` speaks MCP with plain curl so every request is visible.
 
 This is the real output of `examples/demo/run-local.sh` (uBixVault 1.7.0, uBixShepherd
-0.6.0-beta.1). The Docker Compose version runs the same script against the same config.
+0.6.0-beta.1). The Docker Compose version runs the same script against the same config,
+and CI runs it on every change (`bin/ci/demo-compose.sh`) and checks for these outcomes.
 
 ```
 == 0. No token, no entry
@@ -296,7 +297,6 @@ policy allows can still do everything that call can do.
 | Identity | OIDC JWTs. No SAML or SCIM |
 | Not included | Admin UI, multi-tenancy, response filtering, plugins, rate limiting beyond the per-user limit |
 | Platforms | Linux and macOS are tested. Windows builds and is untested |
-| Docker Compose demo | Written alongside the local runner but, at the time of writing, only the local runner's output above has been captured |
 
 ## Develop
 
