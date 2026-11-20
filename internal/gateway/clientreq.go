@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -62,10 +63,16 @@ func (g *Gateway) open(token, user, tool, args string, answers mcp.InputResponse
 	return st.Upstream, true
 }
 
-// argsHash identifies a call's arguments independent of key order and spacing.
-func argsHash(args map[string]any) string {
-	b, _ := json.Marshal(args) // map keys marshal sorted
-	sum := sha256.Sum256(b)
+// argsHash identifies the argument bytes the upstream receives, ignoring only
+// insignificant whitespace, so large numbers, duplicate keys and non-object payloads all
+// count. A client retries with the same bytes it sent first.
+func argsHash(raw json.RawMessage) string {
+	var b bytes.Buffer
+	if json.Compact(&b, raw) != nil {
+		b.Reset()
+		b.Write(raw)
+	}
+	sum := sha256.Sum256(b.Bytes())
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
@@ -94,8 +101,8 @@ func kindOf(ir mcp.InputRequest) string {
 // per request, then either the requests go back to the caller with sealed state, or the
 // call fails because policy denied one or the client cannot receive them. It returns
 // the result and the deny rule, if any.
-func (g *Gateway) needsInput(ctx context.Context, rec audit.Record, pr policy.Request, res *mcp.CallToolResult,
-	canAnswer bool) (*mcp.CallToolResult, string) {
+func (g *Gateway) needsInput(ctx context.Context, rec audit.Record, pr policy.Request, args string,
+	res *mcp.CallToolResult, canAnswer bool) (*mcp.CallToolResult, string) {
 	ids := make([]string, 0, len(res.InputRequests))
 	for id := range res.InputRequests {
 		ids = append(ids, id)
@@ -130,7 +137,7 @@ func (g *Gateway) needsInput(ctx context.Context, rec audit.Record, pr policy.Re
 	if !canAnswer {
 		return errorResult("the upstream needs input from the client, which requires MCP 2026-07-28"), ""
 	}
-	res.RequestState = g.seal(sealedState{User: pr.Principal.User, Tool: rec.Tool, Args: argsHash(pr.Args), IDs: ids,
+	res.RequestState = g.seal(sealedState{User: pr.Principal.User, Tool: rec.Tool, Args: args, IDs: ids,
 		Upstream: res.RequestState, Expires: time.Now().Add(stateTTL).Unix()})
 	return res, ""
 }

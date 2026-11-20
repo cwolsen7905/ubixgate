@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,13 +44,13 @@ func TestEndpointPath(t *testing.T) {
 
 func TestSealedState(t *testing.T) {
 	g := &Gateway{opts: Options{StateKey: []byte("0123456789abcdef0123456789abcdef")}}
-	args := argsHash(map[string]any{"project": "myorg/web", "n": 1})
+	args := argsHash(json.RawMessage(`{"project": "myorg/web", "n": 9007199254740993}`))
 	st := sealedState{User: "alice", Tool: "t__x", Args: args, IDs: []string{"q"}, Upstream: "up-state",
 		Expires: time.Now().Add(time.Minute).Unix()}
 	good := g.seal(st)
 	yes := mcp.InputResponseMap{"q": &mcp.ElicitResult{Action: "accept"}}
-	if up, ok := g.open(good, "alice", "t__x", argsHash(map[string]any{"n": 1, "project": "myorg/web"}), yes); !ok || up != "up-state" {
-		t.Fatalf("valid state refused (%q, %v); key order must not matter", up, ok)
+	if up, ok := g.open(good, "alice", "t__x", argsHash(json.RawMessage(`{"project":"myorg/web","n":9007199254740993}`)), yes); !ok || up != "up-state" {
+		t.Fatalf("valid state refused (%q, %v); spacing must not matter", up, ok)
 	}
 	expired := st
 	expired.Expires = time.Now().Add(-time.Second).Unix()
@@ -59,10 +60,13 @@ func TestSealedState(t *testing.T) {
 		state, user, tool, args string
 		ans                     mcp.InputResponseMap
 	}{
-		"expired":        {g, g.seal(expired), "alice", "t__x", args, yes},
-		"other tool":     {g, good, "alice", "t__y", args, yes},
-		"other user":     {g, good, "bob", "t__x", args, yes},
-		"other args":     {g, good, "alice", "t__x", argsHash(map[string]any{"project": "evil/x", "n": 1}), yes},
+		"expired":    {g, g.seal(expired), "alice", "t__x", args, yes},
+		"other tool": {g, good, "alice", "t__y", args, yes},
+		"other user": {g, good, "bob", "t__x", args, yes},
+		"other args": {g, good, "alice", "t__x", argsHash(json.RawMessage(`{"project":"evil/x","n":9007199254740993}`)), yes},
+		// 2^53+1 and 2^53 are the same float64, so a hash of parsed arguments would pass.
+		"large integer":  {g, good, "alice", "t__x", argsHash(json.RawMessage(`{"project":"myorg/web","n":9007199254740992}`)), yes},
+		"not an object":  {g, g.seal(sealedState{User: "alice", Tool: "t__x", Args: argsHash(json.RawMessage(`[1]`)), Expires: st.Expires}), "alice", "t__x", argsHash(json.RawMessage(`[2]`)), nil},
 		"other key":      {other, good, "alice", "t__x", args, yes},
 		"unasked answer": {g, good, "alice", "t__x", args, mcp.InputResponseMap{"z": &mcp.ElicitResult{}}},
 		"garbage":        {g, "not-a-state", "alice", "t__x", args, yes},
