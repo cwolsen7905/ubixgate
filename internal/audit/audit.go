@@ -126,12 +126,20 @@ func (s *Sink) Write(r Record) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	next := ""
 	if s.key != nil {
-		s.prev = link(s.key, s.prev, b)
-		b = append(b[:len(b)-1], `,"chain":"`+s.prev+`"}`...)
+		next = link(s.key, s.prev, b)
+		b = append(b[:len(b)-1], `,"chain":"`+next+`"}`...)
 	}
-	_, err = s.w.Write(append(b, '\n'))
-	return err
+	if _, err = s.w.Write(append(b, '\n')); err != nil {
+		// The chain stays at the last complete record. A partial line left in the file
+		// is what audit verify will name.
+		return err
+	}
+	if s.key != nil {
+		s.prev = next
+	}
+	return nil
 }
 
 func link(key []byte, prev string, line []byte) string {
@@ -153,8 +161,11 @@ func split(line []byte) ([]byte, string, bool) {
 	return body, string(line[m[2]:m[3]]), true
 }
 
-// lastChain reads the chain of the file's last line. An empty file starts a chain; a
-// file whose last line is not chained is refused rather than silently started over.
+// lastChain reads the chain of the file's last chained line, so the chain continues
+// after a restart. An empty file starts a chain. A line torn by a crash or a failed
+// write is left in place for audit verify to name, and the file is ended with a newline
+// so the next record starts on its own line. A file with no chained line in its last
+// megabyte is refused rather than silently started over.
 func lastChain(f *os.File) (string, error) {
 	st, err := f.Stat()
 	if err != nil || st.Size() == 0 {
@@ -165,11 +176,18 @@ func lastChain(f *os.File) (string, error) {
 	if _, err := f.ReadAt(buf, st.Size()-n); err != nil && err != io.EOF {
 		return "", err
 	}
-	lines := bytes.Split(bytes.TrimRight(buf, "\n"), []byte("\n"))
-	if _, c, ok := split(lines[len(lines)-1]); ok {
-		return c, nil
+	if buf[len(buf)-1] != '\n' {
+		if _, err := f.Write([]byte("\n")); err != nil {
+			return "", err
+		}
 	}
-	return "", errors.New("chain_key_file is set but the last record is not chained; start a new file")
+	lines := bytes.Split(bytes.TrimRight(buf, "\n"), []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if _, c, ok := split(lines[i]); ok {
+			return c, nil
+		}
+	}
+	return "", errors.New("chain_key_file is set but the file holds no chained record; start a new file")
 }
 
 // BrokenError names the first line where a chained log stops verifying.
@@ -180,13 +198,14 @@ type BrokenError struct {
 
 func (e *BrokenError) Error() string { return fmt.Sprintf("line %d: %s", e.Line, e.Why) }
 
-// Verify checks a chained log from its first line. It returns the number of records and
+// Verify checks a chained log from its first line, starting from the chain value from
+// (empty for a log that begins a chain, or the last chain of the file before it). It returns the number of records and
 // the last chain, or a *BrokenError for the first line that is not chained, does not
 // parse, or does not follow from the line before (edited, removed or inserted).
-func Verify(r io.Reader, key []byte) (int, string, error) {
+func Verify(r io.Reader, key []byte, from string) (int, string, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
-	prev, n := "", 0
+	prev, n := from, 0
 	for sc.Scan() {
 		n++
 		body, c, ok := split(sc.Bytes())

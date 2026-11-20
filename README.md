@@ -313,6 +313,13 @@ On success it prints the last chain value. Lines cut off the end of the file lea
 valid shorter chain, so keep a copy of the last chain somewhere the gateway host cannot
 write, and compare.
 
+One gateway writes one file: two writers on the same file interleave two chains. A
+record whose write fails does not advance the chain, and a line torn by a crash is left
+for `audit verify` to name while the gateway continues the chain on the next line. To
+rotate, move the file away and restart the gateway, which starts a new chain in the new
+file. A file rotated by copying and truncating continues the old chain; verify it with
+`-from`, the last chain of the file before it.
+
 Requests that fail authentication get no audit record (there is no verified caller to
 name). They are counted in `ubixgate_auth_failures_total` and logged.
 

@@ -344,7 +344,7 @@ func TestGateway(t *testing.T) {
 			// The gateway chains every record (audit.chain_key_file).
 			f, _ := os.Open(e.audit)
 			defer f.Close()
-			if n, _, err := audit.Verify(f, []byte(chainKey)); err != nil || n != 6 {
+			if n, _, err := audit.Verify(f, []byte(chainKey), ""); err != nil || n != 6 {
 				t.Errorf("audit chain: %d records, %v", n, err)
 			}
 		})

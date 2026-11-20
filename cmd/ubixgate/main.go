@@ -31,7 +31,7 @@ commands:
   policy explain -tool SERVER__TOOL -user U [-groups G1,G2] [-client C]
                  [-arg KEY=VALUE]... [-client-request KIND] [-config FILE]
                        print the decision and the rule that made it, offline
-  audit verify [-config FILE] [-key KEYFILE] [AUDIT_FILE]
+  audit verify [-config FILE] [-key KEYFILE] [-from CHAIN] [AUDIT_FILE]
                        check a chained audit log; name the first broken line
   version              print the version
 `
@@ -164,6 +164,7 @@ func verifyAudit(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	path := fs.String("config", "ubixgate.yaml", "config file, for audit.path and audit.chain_key_file")
 	keyFile := fs.String("key", "", "chain key file; overrides the config's")
+	from := fs.String("from", "", "the last chain of the file before this one, for a log that was rotated by copying")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 1 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -197,7 +198,7 @@ func verifyAudit(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer f.Close()
-	n, last, err := audit.Verify(f, key)
+	n, last, err := audit.Verify(f, key, *from)
 	if err != nil {
 		fmt.Fprintf(stdout, "%s: %v\n", logFile, err)
 		switch {
