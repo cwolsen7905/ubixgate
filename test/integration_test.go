@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,10 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/ubixsys/ubixgate/internal/audit"
 	"github.com/ubixsys/ubixgate/internal/config"
@@ -621,5 +626,54 @@ func TestLeaseRevokedAtShutdown(t *testing.T) {
 	_ = e.rt.Close()
 	if got := e.vault.Revoked(); !slices.Equal(got, []string{"lease-1"}) {
 		t.Errorf("revoked at shutdown: %v, want [lease-1]", got)
+	}
+}
+
+// Every call is traced: the request, auth, the call, policy, credential and upstream,
+// with the call's outcome on its span and no argument value anywhere.
+func TestTracing(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	otel.SetTextMapPropagator(propagation.TraceContext{}) // as ops.Tracing sets it
+	t.Cleanup(func() { otel.SetTracerProvider(prev); otel.SetTextMapPropagator(prevProp) })
+
+	e := start(t, nil)
+	alice := e.connect(t, e.token("alice", "developers"), "")
+	call(t, alice, "tickets__ticket_create", map[string]any{"project": "myorg/web", "title": "secret plan"})
+
+	byName := map[string]sdktrace.ReadOnlySpan{}
+	for _, s := range rec.Ended() {
+		byName[s.Name()] = s
+		for _, a := range s.Attributes() {
+			if v := a.Value.String(); strings.Contains(v, "secret plan") || strings.Contains(v, "myorg/web") || strings.Contains(v, "alice") {
+				t.Errorf("span %s attribute %s carries a value it must not: %q", s.Name(), a.Key, v)
+			}
+		}
+	}
+	callSpan := byName["tools/call"]
+	for _, name := range []string{"mcp POST", "auth", "tools/call", "policy", "credential", "upstream"} {
+		s, ok := byName[name]
+		if !ok {
+			t.Errorf("no %q span; got %v", name, maps.Keys(byName))
+			continue
+		}
+		if callSpan != nil && s.SpanContext().TraceID() != callSpan.SpanContext().TraceID() {
+			t.Errorf("%q is not in the call's trace", name)
+		}
+	}
+	if callSpan != nil {
+		attrs := map[string]string{}
+		for _, a := range callSpan.Attributes() {
+			attrs[string(a.Key)] = a.Value.String()
+		}
+		if attrs["ubixgate.rule"] != "devs-tickets-own-project" || attrs["ubixgate.status"] != "ok" || attrs["ubixgate.request_id"] == "" {
+			t.Errorf("call span attributes: %v", attrs)
+		}
+	}
+	// The upstream received W3C trace context for the same trace.
+	if callSpan != nil && !e.tickets.SawHeaderValue(callSpan.SpanContext().TraceID().String()) {
+		t.Error("no traceparent for the call's trace reached the upstream")
 	}
 }

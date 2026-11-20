@@ -20,8 +20,14 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ubixsys/ubixgate/internal/config"
+	"github.com/ubixsys/ubixgate/internal/ops"
 	"github.com/ubixsys/ubixgate/internal/secrets"
 	"github.com/ubixsys/ubixgate/internal/version"
 )
@@ -97,10 +103,15 @@ func (u *Upstream) Call(ctx context.Context, user string, params *mcp.CallToolPa
 	defer cancel()
 	if cr := u.cfg.Credential; cr != nil && u.cfg.Transport == "http" {
 		// Fetch now so a Vault failure is reported as such, not as a transport error.
-		cr, err := credFor(ctx, cr)
+		cctx, span := ops.Tracer().Start(ctx, "credential")
+		cr, err := credFor(cctx, cr)
 		if err == nil {
-			_, err = u.creds.Get(ctx, cr)
+			_, err = u.creds.Get(cctx, cr)
 		}
+		if err != nil {
+			span.SetStatus(codes.Error, "credential_unavailable")
+		}
+		span.End()
 		if err != nil {
 			return nil, err
 		}
@@ -117,7 +128,13 @@ func (u *Upstream) Call(ctx context.Context, user string, params *mcp.CallToolPa
 		u.inflight--
 		u.mu.Unlock()
 	}()
+	ctx, span := ops.Tracer().Start(ctx, "upstream", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("ubixgate.server", u.cfg.Name)))
+	defer span.End()
 	res, err := s.CallTool(ctx, params)
+	if err != nil {
+		span.SetStatus(codes.Error, "upstream error")
+	}
 	if errors.Is(err, mcp.ErrConnectionClosed) {
 		// The process exited or the connection broke. Not retried, since a tool call may
 		// not be idempotent; the next call reconnects.
@@ -279,6 +296,9 @@ type credTransport struct {
 }
 
 func (t *credTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Pass the trace on: W3C trace context only, never the caller's token.
+	req = req.Clone(req.Context())
+	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
 	if t.cred == nil {
 		return t.base.RoundTrip(req)
 	}

@@ -169,6 +169,7 @@ upstreams:
 limits: { per_user_per_minute: 120 }       # in memory, per replica
 request_state_key_file: /run/state_key     # optional; see "Requests to the client" below
 audit: { sink: file, path: /var/log/ubixgate/audit.jsonl }   # or sink: stdout
+# tracing: { endpoint: http://collector:4318, sample_ratio: 0.1 }   # OpenTelemetry; off when absent
 # audit.chain_key_file: /run/audit_key   # chain each record to the one before; see "Audit records"
 ```
 
@@ -343,6 +344,15 @@ docker build -t ubixgate .                   # distroless, non-root; or use the 
 | `/readyz` | Every upstream connected and listed, and Vault healthy; otherwise 503 naming what is not |
 | `/metrics` | Prometheus: `ubixgate_tool_calls_total{server,decision,status}`, `ubixgate_tool_call_duration_seconds`, `ubixgate_auth_failures_total`, `ubixgate_upstream_up` |
 
+With a `tracing` block, each MCP request is traced with OpenTelemetry and exported over
+OTLP/HTTP: spans for the request, `auth`, `tools/call`, `policy`, `credential` (HTTP
+upstreams) and `upstream`. The call span carries the tool, server, decision, rule,
+status and the audit `request_id`. No span carries argument values, credentials or the
+caller's identity; join on `request_id` to find who. A caller's W3C `traceparent` is
+continued and its sampling decision followed, and HTTP upstreams receive `traceparent`
+for the gateway's span. `sample_ratio` (default 1) applies to new traces. Tracing is
+off without the block, and then no trace context is read or passed on.
+
 Logs are JSON on stderr (`log/slog`). Grant the gateway's Vault identity read access to
 exactly the configured credential paths, plus `update` on `sys/leases/revoke` if any of
 them is a dynamic secret, nothing else.
@@ -437,8 +447,8 @@ that way: it should be readable in an afternoon. Start with
 | `test/` | End-to-end tests with an in-process IdP, Vault and upstreams over both transports and both protocol revisions |
 
 Built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk). Its
-only other direct dependencies are a YAML parser and the Prometheus client; JWT
-validation uses the standard library.
+other direct dependencies are a YAML parser, the Prometheus client and the OpenTelemetry
+SDK with its OTLP/HTTP exporter; JWT validation uses the standard library.
 
 Releases and versioning: [docs/RELEASING.md](docs/RELEASING.md),
 [docs/VERSIONING.md](docs/VERSIONING.md). Changes: [CHANGELOG.md](CHANGELOG.md).
