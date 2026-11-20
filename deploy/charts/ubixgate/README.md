@@ -22,7 +22,7 @@ part of CI. Report what you find.
    first: `ubixgate check ubixgate.yaml`.
 
 3. **Give the gateway a Vault identity**, if any upstream has a credential. With uBixVault
-   or HashiCorp Vault in the cluster, the Kubernetes login method needs no files: create a
+   in the cluster (the only Vault server this beta is tested against), the Kubernetes login method needs no files: create a
    Vault role bound to this release's service account (named after the release, for
    example `ubixgate` in namespace `mcp`) and a policy that can read exactly the configured
    credential paths. Then:

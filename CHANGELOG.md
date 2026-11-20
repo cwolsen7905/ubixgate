@@ -16,6 +16,11 @@ interface is listed under **Interface changes** in the release that makes it.
   roll the pods. No image is published yet; the chart needs one you build. `make
   chart-check` lints and renders it and validates the rendered config.
 
+### Fixed
+
+- The Docker Compose demo now starts: its uBixVault needed `-dev-no-tls` to serve plain
+  HTTP on the demo's private network. CI now runs the Compose demo on every change.
+
 ### Changed
 
 - Releases are published only at https://github.com/ubixsys/ubixgate/releases. Other
@@ -43,7 +48,8 @@ on it.
   globs and top-level string argument globs. Deny rules are checked first; the first match
   decides. Each caller's `tools/list` shows only the tools they may call, with
   `cacheScope: private`. Denials name the deciding rule. The policy reloads on SIGHUP.
-- Credential injection from a Vault-API server (uBixVault or HashiCorp Vault), logged in
+- Credential injection from a Vault-API server, tested against uBixVault (HashiCorp Vault
+  speaks the same API but is not tested in this release), logged in
   with a token, AppRole or Kubernetes, renewed at half its TTL. HTTP upstreams get the
   credential as a header on every request, with one retry after a 401; stdio upstreams get
   it as an environment variable at start and are restarted when it expires. Reads are

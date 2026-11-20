@@ -2,3 +2,4 @@
 /bin/ubixgate
 dist/
 .chart-check/
+demo-output.txt

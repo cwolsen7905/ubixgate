@@ -4,10 +4,12 @@ name: ubixgate-demo
 
 services:
   # uBixVault from its published image. Its data lives in memory, so every start is a
-  # fresh vault that vault-init prepares again.
+  # fresh vault that vault-init prepares again. Plain HTTP (-dev-no-tls) is for the demo
+  # only: the vault is reachable just on this compose network and holds throwaway values.
+  # Never run uBixVault like this anywhere else.
   ubixvault:
     image: ghcr.io/ubixsys/ubixvault:1.7.0
-    command: ["server", "-listen", "0.0.0.0:8200", "-data", "/var/lib/ubixvault"]
+    command: ["server", "-listen", "0.0.0.0:8200", "-data", "/var/lib/ubixvault", "-dev-no-tls"]
     tmpfs: ["/var/lib/ubixvault:uid=65532,gid=65532"]
 
   # One-shot: initialise and unseal the vault, store the tickets token, create the

@@ -1,5 +1,5 @@
-// Package secrets is a small client for the Vault HTTP API (uBixVault and HashiCorp
-// Vault both serve it): the gateway's own login and renewal, reading a secret, and a
+// Package secrets is a small client for the Vault HTTP API (tested against uBixVault;
+// HashiCorp Vault serves the same API but is not yet tested): the gateway's own login and renewal, reading a secret, and a
 // per-path cache so a burst of calls makes one read.
 package secrets
 
