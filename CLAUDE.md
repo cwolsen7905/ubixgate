@@ -4,9 +4,9 @@ Guidance for Claude Code (or any AI session) working in this repository.
 
 ## Where things stand
 
-uBixGate is an MCP gateway in Go, being built toward its first public beta,
-`v0.1.0-beta.1`. Today the repo holds the skeleton (build, gate, CI, release workflow) and
-a `version` command; the gateway itself is not written yet. The vision, requirements,
+uBixGate is an MCP gateway in Go, in public beta: the latest release is
+`v0.1.0-beta.2`. The README says what it does and its "Limits of this beta" table says
+what it does not. The vision, requirements,
 design and roadmap are kept by the maintainer outside this repo. A session's brief carries
 what it needs from them.
 

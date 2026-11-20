@@ -8,6 +8,13 @@ interface is listed under **Interface changes** in the release that makes it.
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-11-20
+
+The second beta: requests from upstreams to the calling client under MCP 2026-07-28,
+per-user upstream credentials, `policy explain`, a tamper-evident audit log, revocation
+of unused dynamic-secret leases, and OpenTelemetry tracing. It has still had no
+independent security review.
+
 ### Added
 
 - Requests from an upstream to the caller's client (elicitation, sampling, roots) pass
