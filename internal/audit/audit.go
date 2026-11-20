@@ -93,6 +93,7 @@ type Sink struct {
 	c    io.Closer
 	key  []byte // chain key; nil for an unchained log
 	prev string // the last record's chain
+	torn bool   // the last write failed partway, leaving a line with no newline
 }
 
 // NewSink writes to w.
@@ -131,11 +132,17 @@ func (s *Sink) Write(r Record) error {
 		next = link(s.key, s.prev, b)
 		b = append(b[:len(b)-1], `,"chain":"`+next+`"}`...)
 	}
-	if _, err = s.w.Write(append(b, '\n')); err != nil {
+	line := append(b, '\n')
+	if s.torn { // end the fragment first, so this record starts its own line
+		line = append([]byte{'\n'}, line...)
+	}
+	if n, err := s.w.Write(line); err != nil {
 		// The chain stays at the last complete record. A partial line left in the file
 		// is what audit verify will name.
+		s.torn = s.torn && n == 0 || n > 0 && n < len(line)
 		return err
 	}
+	s.torn = false
 	if s.key != nil {
 		s.prev = next
 	}

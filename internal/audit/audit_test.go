@@ -164,6 +164,48 @@ func TestChainSurvivesFailedWrite(t *testing.T) {
 	}
 }
 
+// halfWriter writes half of what it is given, then fails, as a filling disk can.
+type halfWriter struct {
+	w    io.Writer
+	fail bool
+}
+
+func (h *halfWriter) Write(p []byte) (int, error) {
+	if !h.fail {
+		return h.w.Write(p)
+	}
+	n, _ := h.w.Write(p[:len(p)/2])
+	return n, errors.New("disk full")
+}
+
+// A write that fails partway leaves a fragment; the next record still starts its own
+// line and continues the chain, so verify names only the fragment.
+func TestChainAfterPartialWrite(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	var buf bytes.Buffer
+	hw := &halfWriter{w: &buf}
+	s := &Sink{w: hw, key: key}
+	_ = s.Write(Record{User: "a"})
+	hw.fail = true
+	if err := s.Write(Record{User: "lost"}); err == nil {
+		t.Fatal("write should fail")
+	}
+	hw.fail = false
+	_ = s.Write(Record{User: "b"})
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want a, the fragment and b on their own lines: %q", buf.String())
+	}
+	_, _, err := Verify(bytes.NewReader(buf.Bytes()), key, "")
+	var be *BrokenError
+	if !errors.As(err, &be) || be.Line != 2 {
+		t.Errorf("err = %v, want the fragment on line 2 named", err)
+	}
+	if _, _, err := Verify(strings.NewReader(lines[0]+"\n"+lines[2]+"\n"), key, ""); err != nil {
+		t.Errorf("b does not follow a: %v", err)
+	}
+}
+
 // A line torn by a crash: the gateway still starts, the next record goes on its own
 // line and continues from the last complete one, and verify names the torn line.
 func TestChainAfterTornLine(t *testing.T) {
