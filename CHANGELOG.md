@@ -16,6 +16,11 @@ interface is listed under **Interface changes** in the release that makes it.
   roll the pods. No image is published yet; the chart needs one you build. `make
   chart-check` lints and renders it and validates the rendered config.
 
+### Changed
+
+- Releases are published only at https://github.com/ubixsys/ubixgate/releases. Other
+  GitHub copies of the repository never carry release downloads or signatures.
+
 ## [0.1.0-beta.1] - not yet released
 
 The first public beta: one authenticated MCP endpoint in front of many MCP servers, with
