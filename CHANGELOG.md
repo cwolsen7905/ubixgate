@@ -8,6 +8,11 @@ interface is listed under **Interface changes** in the release that makes it.
 
 ## [Unreleased]
 
+### Changed
+
+- The README's demo transcript is now the Docker Compose demo's real output, as CI
+  captures it, instead of the loopback runner's.
+
 ## [0.1.0-beta.1] - 2026-11-19
 
 The first public beta: one authenticated MCP endpoint in front of many MCP servers, with

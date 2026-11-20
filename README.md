@@ -81,9 +81,12 @@ by a one-shot script), a toy identity provider that mints real signed tokens for
 without a service token stored in Vault, and [uBixShepherd](https://github.com/ubixsys/ubixshepherd)
 as a stdio upstream. `demo.sh` speaks MCP with plain curl so every request is visible.
 
-This is the real output of `examples/demo/run-local.sh` (uBixVault 1.7.0, uBixShepherd
-0.6.0-beta.1). The Docker Compose version runs the same script against the same config,
-and CI runs it on every change (`bin/ci/demo-compose.sh`) and checks for these outcomes.
+This is the real output of the Docker Compose demo (uBixVault 1.7.0, uBixShepherd
+0.6.0-beta.1), as CI captured it on 2026-11-20. CI runs the Compose demo on every change
+(`bin/ci/demo-compose.sh`), fails unless the 401, the service-token call and both denials
+appear, and keeps the output as the job's `demo-output.txt` artifact.
+`examples/demo/run-local.sh` runs the same script against the same config without Docker;
+only the latencies differ.
 
 ```
 == 0. No token, no entry
@@ -117,7 +120,7 @@ alice deletes a ticket outside myorg/:
   ERROR: denied by rule default-deny
 
 == 5. The audit log: one line per call, argument values redacted unless a rule keeps them
-{"user":"alice","tool":"tickets__ticket_create","decision":"allow","rule":"devs-tickets-own-project","status":"ok","latency_ms":0,"args":{"project":"myorg/web","title":"[redacted]"}}
+{"user":"alice","tool":"tickets__ticket_create","decision":"allow","rule":"devs-tickets-own-project","status":"ok","latency_ms":1,"args":{"project":"myorg/web","title":"[redacted]"}}
 {"user":"alice","tool":"shepherd__lane_list","decision":"allow","rule":"devs-read-shepherd","status":"ok","latency_ms":1,"args":null}
 {"user":"bob","tool":"tickets__ticket_delete","decision":"deny","rule":"contractors-no-writes","status":"denied","latency_ms":0,"args":{"id":"[redacted]","project":"[redacted]"}}
 {"user":"alice","tool":"tickets__ticket_delete","decision":"deny","rule":"default-deny","status":"denied","latency_ms":0,"args":{"id":"[redacted]","project":"[redacted]"}}
