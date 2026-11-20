@@ -3,6 +3,21 @@
 # in dev push pipelines, so the two never meet.
 stages: [build, test, deploy, approval, promote]
 
+# Advisory AI review of merge requests (job `kelpie-review`, stage `test`). It posts review
+# threads on a merge request into AI_REVIEW_BASE_BRANCH and never fails the pipeline for what
+# it finds. The ref is a commit, not a branch, so the included job cannot change this CI
+# unreviewed; bump it on purpose. Needs the OPENROUTER_API_KEY, AI_REVIEW_GITLAB_TOKEN,
+# KELPIE_REGISTRY_USER and KELPIE_REGISTRY_TOKEN group variables; without them the job exits
+# 75, is allowed to fail and the pipeline stays green.
+include:
+  - project: ubixsys/ubixkelpie
+    ref: 96e48eee696766768a397e03ec1719ffd5e3647b
+    file: ci/kelpie.yml
+
+variables:
+  AI_REVIEW_BASE_BRANCH: dev
+  AI_REVIEW_MODE: advisory
+
 # One pipeline per push. A merge request gets a merge request pipeline (the one that
 # "Pipelines must succeed" judges); the push to its branch then starts no branch pipeline of
 # its own. dev and main always get push pipelines (promote-to-main runs there), and so does
