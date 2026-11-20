@@ -48,7 +48,8 @@ on it.
   globs and top-level string argument globs. Deny rules are checked first; the first match
   decides. Each caller's `tools/list` shows only the tools they may call, with
   `cacheScope: private`. Denials name the deciding rule. The policy reloads on SIGHUP.
-- Credential injection from a Vault-API server (uBixVault or HashiCorp Vault), logged in
+- Credential injection from a Vault-API server, tested against uBixVault (HashiCorp Vault
+  speaks the same API but is not tested in this release), logged in
   with a token, AppRole or Kubernetes, renewed at half its TTL. HTTP upstreams get the
   credential as a header on every request, with one retry after a 401; stdio upstreams get
   it as an environment variable at start and are restarted when it expires. Reads are

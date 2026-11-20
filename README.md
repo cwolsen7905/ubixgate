@@ -146,7 +146,7 @@ identity:
   jwks_url: https://idp.example.com/jwks
   claims: { user: email, groups: groups, client: azp }
 
-vault:                                     # uBixVault or HashiCorp Vault
+vault:                                     # uBixVault (HashiCorp Vault: untested)
   address: https://vault.example.com
   auth: { method: approle, role_id_file: /run/role_id, secret_id_file: /run/secret_id }
   # or: { method: kubernetes, role: ubixgate }  or: { method: token, token_file: ... }
@@ -290,6 +290,7 @@ policy allows can still do everything that call can do.
 
 | Area | State |
 |---|---|
+| Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
 | Upstream credentials | One service credential per upstream. Upstream logs see the gateway, not the person; the audit log is the per-user record. Per-user credentials are on the roadmap |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
 | Leases | Dynamic secrets are read and their lease caps the cache, but leases are not revoked when unused; keep their TTLs short |
