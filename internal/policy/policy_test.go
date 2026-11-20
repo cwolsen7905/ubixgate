@@ -172,6 +172,7 @@ func TestNewRejects(t *testing.T) {
 		{"no tools", []Rule{with(func(r *Rule) { r.Tools = nil })}, "tools is required"},
 		{"bad tool glob", []Rule{with(func(r *Rule) { r.Tools = []string{"a["} })}, "not a valid glob"},
 		{"bad arg glob", []Rule{with(func(r *Rule) { r.Args = map[string]string{"p": "[x"} })}, "args.p"},
+		{"unknown client request", []Rule{with(func(r *Rule) { r.ClientRequests = []string{"telepathy"} })}, "client_requests"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -180,5 +181,48 @@ func TestNewRejects(t *testing.T) {
 				t.Errorf("err = %v, want it to mention %q", err, c.want)
 			}
 		})
+	}
+}
+
+// Client requests are decided by rules that name them, and only by those: a rule
+// without client_requests never allows one, and a rule with them never decides a call.
+func TestClientRequests(t *testing.T) {
+	r, err := New([]Rule{
+		{Name: "no-sampling-for-contractors", Effect: Deny, When: When{Groups: []string{"contractors"}},
+			Server: "*", Tools: []string{"*"}, ClientRequests: []string{"sampling"}},
+		{Name: "devs-call", Effect: Allow, When: When{Groups: []string{"developers", "contractors"}},
+			Server: "tickets", Tools: []string{"*"}},
+		{Name: "devs-elicit", Effect: Allow, When: When{Groups: []string{"developers", "contractors"}},
+			Server: "tickets", Tools: []string{"ticket_close"}, ClientRequests: []string{"elicitation", "sampling"}},
+	}, servers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		p    Principal
+		tool string
+		kind string
+		want string
+	}{
+		{"the call itself", alice, "ticket_close", "", "devs-call"},
+		{"allowed elicitation", alice, "ticket_close", "elicitation", "devs-elicit"},
+		{"kind not listed", alice, "ticket_close", "roots", DefaultDeny},
+		{"tool not listed", alice, "ticket_list", "elicitation", DefaultDeny},
+		{"deny rule for the kind", bob, "ticket_close", "sampling", "no-sampling-for-contractors"},
+		{"deny rule for a kind does not deny the call", bob, "ticket_close", "", "devs-call"},
+		{"nobody", eve, "ticket_close", "elicitation", DefaultDeny},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, err := r.Decide(context.Background(), Request{Principal: c.p, Server: "tickets", Tool: c.tool, ClientRequest: c.kind})
+			if err != nil || d.Rule != c.want {
+				t.Errorf("rule = %q (err %v), want %q", d.Rule, err, c.want)
+			}
+		})
+	}
+	// A rule about client requests neither lists a tool nor hides one.
+	if !r.Visible(bob, "tickets", "ticket_close") || r.Visible(eve, "tickets", "ticket_close") {
+		t.Error("client request rules changed the listing")
 	}
 }

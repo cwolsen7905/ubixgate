@@ -86,9 +86,11 @@ func (u *Upstream) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Call forwards one tool call. Errors returned are transport, credential or protocol
-// failures; a tool that ran and failed comes back as a result with IsError set.
-func (u *Upstream) Call(ctx context.Context, tool string, args json.RawMessage) (*mcp.CallToolResult, error) {
+// Call forwards one tool call; params.Name is the upstream's own tool name. Errors
+// returned are transport, credential or protocol failures; a tool that ran and failed
+// comes back as a result with IsError set. A result that asks for client input is
+// returned as is (NeedsInput), for the gateway to decide on.
+func (u *Upstream) Call(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, u.cfg.Timeout)
 	defer cancel()
 	if cr := u.cfg.Credential; cr != nil && u.cfg.Transport == "http" {
@@ -109,10 +111,6 @@ func (u *Upstream) Call(ctx context.Context, tool string, args json.RawMessage) 
 		u.inflight--
 		u.mu.Unlock()
 	}()
-	params := &mcp.CallToolParams{Name: tool}
-	if len(args) > 0 {
-		params.Arguments = args
-	}
 	res, err := s.CallTool(ctx, params)
 	if errors.Is(err, mcp.ErrConnectionClosed) {
 		// The process exited or the connection broke. Not retried, since a tool call may
@@ -147,6 +145,12 @@ func (u *Upstream) ensure(ctx context.Context) (*mcp.ClientSession, error) {
 		return nil, err
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "ubixgate", Version: version.Version}, &mcp.ClientOptions{
+		// The gateway itself answers no sampling, elicitation or roots requests, so an
+		// upstream on an older revision, which would send them over this shared
+		// connection, is told the client cannot. Newer upstreams see the calling client's
+		// own capabilities per call and return their requests in the result instead.
+		Capabilities:   &mcp.ClientCapabilities{},
+		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true},
 		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

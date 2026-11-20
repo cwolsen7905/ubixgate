@@ -68,7 +68,13 @@ policy:
       effect: allow
       when: { groups: [developers, contractors] }
       server: stdio
-      tools: [status, env_has]
+      tools: [status, env_has, ask]
+    - name: alice-confirms-closes
+      effect: allow
+      when: { users: [alice@example.com] }
+      server: tickets
+      tools: [ticket_close]
+      client_requests: [elicitation]
 `
 
 func start(t *testing.T, ticketVersions []string) *env {
@@ -165,7 +171,12 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func (e *env) connect(t *testing.T, token, protocol string) *mcp.ClientSession {
 	t.Helper()
-	c := mcp.NewClient(&mcp.Implementation{Name: "integration-test", Version: "1"}, nil)
+	return e.connectWith(t, token, protocol, nil)
+}
+
+func (e *env) connectWith(t *testing.T, token, protocol string, opts *mcp.ClientOptions) *mcp.ClientSession {
+	t.Helper()
+	c := mcp.NewClient(&mcp.Implementation{Name: "integration-test", Version: "1"}, opts)
 	s, err := c.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: e.url,
 		HTTPClient: &http.Client{Transport: bearer{token}}, DisableStandaloneSSE: true},
 		&mcp.ClientSessionOptions{ProtocolVersion: protocol})
@@ -240,11 +251,11 @@ func TestGateway(t *testing.T) {
 			}
 
 			// 1. Each caller sees only the tools policy lets them call.
-			wantAlice := []string{"stdio__env_has", "stdio__status", "tickets__ticket_create", "tickets__ticket_delete", "tickets__ticket_list"}
+			wantAlice := []string{"stdio__ask", "stdio__env_has", "stdio__status", "tickets__ticket_close", "tickets__ticket_create", "tickets__ticket_delete", "tickets__ticket_list"}
 			if got := toolNames(t, alice); !slices.Equal(got, wantAlice) {
 				t.Errorf("alice sees %v, want %v", got, wantAlice)
 			}
-			if got := toolNames(t, bob); !slices.Equal(got, []string{"stdio__env_has", "stdio__status"}) {
+			if got := toolNames(t, bob); !slices.Equal(got, []string{"stdio__ask", "stdio__env_has", "stdio__status"}) {
 				t.Errorf("bob sees %v", got)
 			}
 
@@ -392,5 +403,115 @@ func TestAuthentication(t *testing.T) {
 	resp.Body.Close()
 	if meta["resource"] != e.url {
 		t.Errorf("metadata resource = %v, want %s", meta["resource"], e.url)
+	}
+}
+
+// An upstream's request to the caller's client (here an elicitation) goes back to that
+// caller only when a rule allows it, is audited as its own record, and the upstream's
+// state can be continued only by the same user, with answers to the requests asked.
+func TestClientRequests(t *testing.T) {
+	e := start(t, nil)
+	accept := &mcp.ClientOptions{ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
+	}}
+	manual := &mcp.ClientOptions{ElicitationHandler: accept.ElicitationHandler,
+		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}}
+	aliceTok, carolTok := e.token("alice", "developers"), e.token("carol", "developers")
+	args := map[string]any{"project": "myorg/web"}
+
+	// 1. Allowed: the SDK client answers and retries; the upstream gets its own state back.
+	alice := e.connectWith(t, aliceTok, "2026-07-28", accept)
+	text, isErr := call(t, alice, "tickets__ticket_close", args)
+	if isErr || text != "closed in myorg/web: answer accept, state state-for-myorg/web" {
+		t.Fatalf("allowed elicitation: %q (error=%v)", text, isErr)
+	}
+
+	// 2. No rule allows carol's elicitation: the call fails naming the rule.
+	carol := e.connectWith(t, carolTok, "2026-07-28", accept)
+	if text, isErr := call(t, carol, "tickets__ticket_close", args); !isErr || text != "denied by rule default-deny" {
+		t.Errorf("denied elicitation: %q", text)
+	}
+
+	// 3. A 2025-11-25 client cannot receive the request in this stateless gateway.
+	old := e.connectWith(t, aliceTok, "2025-11-25", accept)
+	if text, isErr := call(t, old, "tickets__ticket_close", args); !isErr || !strings.Contains(text, "requires MCP 2026-07-28") {
+		t.Errorf("old client: %q", text)
+	}
+
+	// 4. The sealed state works only for its user, with answers to the requests asked.
+	aliceM := e.connectWith(t, aliceTok, "2026-07-28", manual)
+	res, err := aliceM.CallTool(context.Background(), &mcp.CallToolParams{Name: "tickets__ticket_close", Arguments: args})
+	if err != nil || !res.NeedsInput() || res.RequestState == "" || strings.Contains(res.RequestState, "state-for") {
+		t.Fatalf("first round: %+v, %v", res, err)
+	}
+	carolM := e.connectWith(t, carolTok, "2026-07-28", manual)
+	yes := mcp.InputResponseMap{"confirm": &mcp.ElicitResult{Action: "accept"}}
+	for name, tc := range map[string]struct {
+		s     *mcp.ClientSession
+		state string
+		ans   mcp.InputResponseMap
+	}{
+		"another user":      {carolM, res.RequestState, yes},
+		"tampered":          {aliceM, res.RequestState + "x", yes},
+		"forged":            {aliceM, "e30.AAAA", yes},
+		"answers, no state": {aliceM, "", yes},
+		"unasked answer":    {aliceM, res.RequestState, mcp.InputResponseMap{"other": &mcp.ElicitResult{Action: "accept"}}},
+	} {
+		r, err := tc.s.CallTool(context.Background(), &mcp.CallToolParams{Name: "tickets__ticket_close", Arguments: args,
+			RequestState: tc.state, InputResponses: tc.ans})
+		if err != nil || !r.IsError || r.Content[0].(*mcp.TextContent).Text != "denied by rule invalid-request-state" {
+			t.Errorf("%s: %+v, %v", name, r, err)
+		}
+	}
+
+	// 5. A 2025-11-25 upstream shares one connection among callers, so the gateway
+	// declares no client capabilities there and its requests are refused.
+	if text, _ := call(t, alice, "stdio__ask", nil); text != "elicit error: client does not support elicitation" {
+		t.Errorf("stdio elicitation: %q", text)
+	}
+
+	// 6. The audit log: each client request is its own record, after its call's.
+	type row struct{ user, kind, decision, rule, status string }
+	var got []row
+	for _, r := range readAudit(t, e.audit)[:7] {
+		got = append(got, row{strings.TrimSuffix(r.User, "@example.com"), r.ClientRequest, r.Decision, r.Rule, r.Status})
+	}
+	want := []row{
+		{"alice", "elicitation", "allow", "alice-confirms-closes", "ok"},
+		{"alice", "", "allow", "devs-tickets-own-project", "input_required"},
+		{"alice", "", "allow", "devs-tickets-own-project", "ok"},
+		{"carol", "elicitation", "deny", "default-deny", "denied"},
+		{"carol", "", "deny", "default-deny", "denied"},
+		{"alice", "elicitation", "allow", "alice-confirms-closes", "not_sent"},
+		{"alice", "", "allow", "devs-tickets-own-project", "not_sent"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("audit:\n got %v\nwant %v", got, want)
+	}
+}
+
+// When one request in a result is denied, none is sent, and the allowed ones are
+// recorded as not sent rather than ok.
+func TestClientRequestsMixed(t *testing.T) {
+	e := start(t, nil)
+	alice := e.connectWith(t, e.token("alice", "developers"), "2026-07-28", &mcp.ClientOptions{
+		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return &mcp.ElicitResult{Action: "accept"}, nil
+		}})
+	text, isErr := call(t, alice, "tickets__ticket_close", map[string]any{"project": "myorg/web", "title": "and summarize"})
+	if !isErr || text != "denied by rule default-deny" {
+		t.Fatalf("mixed: %q", text)
+	}
+	var got []string
+	for _, r := range readAudit(t, e.audit) {
+		got = append(got, fmt.Sprintf("%s %s %s %s %s", r.ClientRequest, r.Decision, r.Rule, r.Status, r.Reason))
+	}
+	want := []string{
+		"elicitation allow alice-confirms-closes not_sent client_request_denied",
+		"sampling deny default-deny denied ",
+		" deny default-deny denied client_request_denied",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("audit:\n got %q\nwant %q", got, want)
 	}
 }

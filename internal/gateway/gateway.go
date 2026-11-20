@@ -45,7 +45,8 @@ type Options struct {
 	Upstreams   []*upstream.Upstream
 	Audit       *audit.Sink
 	Redactor    audit.Redactor
-	PerUserRate int // calls per minute per user; 0 means no limit
+	PerUserRate int    // calls per minute per user; 0 means no limit
+	StateKey    []byte // seals upstream request state to the caller; see clientreq.go
 	Metrics     *ops.Metrics
 	Log         *slog.Logger
 }
@@ -201,9 +202,7 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 
 	finish := func(res *mcp.CallToolResult) *mcp.CallToolResult {
 		rec.LatencyMS = time.Since(start).Milliseconds()
-		if err := g.opts.Audit.Write(rec); err != nil {
-			g.opts.Log.Error("audit write failed", "err", err, "request_id", rec.RequestID)
-		}
+		g.write(rec)
 		g.opts.Metrics.Calls.WithLabelValues(rec.Server, rec.Decision, rec.Status).Inc()
 		g.opts.Metrics.CallDuration.WithLabelValues(rec.Server).Observe(time.Since(start).Seconds())
 		if res.Meta == nil {
@@ -244,9 +243,23 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 		return deny(RuleLimit, RuleLimit)
 	}
 
+	params := &mcp.CallToolParams{Name: r.tool, Meta: clientCaps(req.Params.Meta)}
+	if len(req.Params.Arguments) > 0 {
+		params.Arguments = req.Params.Arguments
+	}
+	if req.Params.RequestState != "" || len(req.Params.InputResponses) > 0 {
+		// A retry carrying answers: the state must be one this gateway sealed for this
+		// user and tool, and the answers must be to the requests it passed on.
+		up, ok := g.open(req.Params.RequestState, p.User, req.Params.Name, argsHash(req.Params.Arguments), req.Params.InputResponses)
+		if !ok {
+			return deny(RuleRequestState, RuleRequestState)
+		}
+		params.RequestState, params.InputResponses = up, req.Params.InputResponses
+	}
+
 	rec.Decision, rec.Rule = string(policy.Allow), dec.Rule
 	rec.Args = g.opts.Redactor.Redact(args, dec.AuditArgs)
-	res, err := r.up.Call(ctx, r.tool, req.Params.Arguments)
+	res, err := r.up.Call(ctx, params)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		rec.Status, rec.Reason = audit.StatusTimeout, "upstream did not answer in time"
@@ -258,12 +271,31 @@ func (g *Gateway) call(ctx context.Context, req *mcp.CallToolRequest) *mcp.CallT
 	case err != nil:
 		rec.Status, rec.Reason = audit.StatusUpstreamError, err.Error()
 		return finish(errorResult("upstream error"))
+	case res.NeedsInput():
+		rec.LatencyMS = time.Since(start).Milliseconds() // for the request records
+		out, denied := g.needsInput(ctx, rec, pr, argsHash(req.Params.Arguments), res, canAnswer(req))
+		switch {
+		case denied != "":
+			rec.Decision, rec.Rule, rec.Status = string(policy.Deny), denied, audit.StatusDenied
+			rec.Reason = "client_request_denied"
+		case out != res:
+			rec.Status, rec.Reason = audit.StatusNotSent, "client_protocol"
+		default:
+			rec.Status = audit.StatusInputRequired
+		}
+		return finish(out)
 	case res.IsError:
 		rec.Status = audit.StatusToolError
 	default:
 		rec.Status = audit.StatusOK
 	}
 	return finish(res)
+}
+
+func (g *Gateway) write(rec audit.Record) {
+	if err := g.opts.Audit.Write(rec); err != nil {
+		g.opts.Log.Error("audit write failed", "err", err, "request_id", rec.RequestID)
+	}
 }
 
 func errorResult(msg string) *mcp.CallToolResult {

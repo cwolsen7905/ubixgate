@@ -23,6 +23,11 @@ const (
 	StatusToolError     = "tool_error"     // the upstream ran the tool and reported an error
 	StatusUpstreamError = "upstream_error" // the call did not complete: transport, credential or protocol failure
 	StatusTimeout       = "timeout"
+	// StatusInputRequired: the upstream asked the caller's client for input, and the
+	// call continues when the client retries with the answers.
+	StatusInputRequired = "input_required"
+	// StatusNotSent: a client request the policy allowed but this client cannot receive.
+	StatusNotSent = "not_sent"
 )
 
 // Record is one audit line. Field names are a public interface (docs/VERSIONING.md).
@@ -35,6 +40,7 @@ type Record struct {
 	ClientDeclared string         `json:"client_declared,omitempty"`
 	Server         string         `json:"server,omitempty"`
 	Tool           string         `json:"tool"`
+	ClientRequest  string         `json:"client_request,omitempty"` // sampling, elicitation or roots; empty for the call itself
 	Decision       string         `json:"decision"`
 	Rule           string         `json:"rule"`
 	Status         string         `json:"status"`
