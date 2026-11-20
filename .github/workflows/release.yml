@@ -3,8 +3,10 @@ name: Release
 # Publish a GitHub Release for a version tag. Tags are cut on GitLab, which push-mirrors
 # them here. A mirrored tag does not always fire the tag push event, so the workflow can
 # also be run by hand against the tag:
-#   gh workflow run Release --ref v0.1.0-beta.1
-# See docs/RELEASING.md.
+#   gh workflow run Release --repo ubixsys/ubixgate --ref v0.1.0-beta.1
+# The mirror also reaches other GitHub copies of this repo; only ubixsys/ubixgate publishes,
+# so there is one set of downloads and signatures (the verify command in docs/RELEASING.md
+# expects this repo's identity). See docs/RELEASING.md.
 on:
   push:
     tags: ["v*"]
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   build:
     name: Build, check and sign
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'ubixsys/ubixgate' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read

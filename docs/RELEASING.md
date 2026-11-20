@@ -21,6 +21,9 @@ directly, and the job refuses.
 `main`, including when it is started by hand.
 
 **The mirror** carries `dev`, `main` and tags to GitHub. Do not push to GitHub directly.
+It may push to more than one GitHub repository, but only `ubixsys/ubixgate` publishes
+releases: the release workflow skips itself anywhere else, so each version has one set of
+downloads and one signature identity.
 
 **If promotion stops**, open the `promote-to-main` job on the latest `dev` pipeline. It
 names the cause: a diverged `main` (land the missing commits on `dev` by merge request;
@@ -55,8 +58,8 @@ published yet; build one from the `Dockerfile`.
    git fetch origin && git tag -a vX.Y.Z -m vX.Y.Z origin/main && git push origin vX.Y.Z
    ```
 
-4. Watch the Release workflow on GitHub. If the mirrored tag did not start it, run
-   `gh workflow run Release --ref vX.Y.Z`.
+4. Watch the Release workflow on `ubixsys/ubixgate`. If the mirrored tag did not start it,
+   run `gh workflow run Release --repo ubixsys/ubixgate --ref vX.Y.Z`.
 
 ## Verifying a download
 
