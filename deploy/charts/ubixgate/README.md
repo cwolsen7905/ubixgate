@@ -77,7 +77,7 @@ ingress:
 | Several replicas | Works: the endpoint is stateless. The per-user call limit is per replica, and each replica runs its own stdio upstream processes |
 | stdio upstreams | The image holds only `ubixgate`. A stdio upstream's binary must be in the image, so build your own image on top of it, or run the server as an HTTP upstream instead |
 | AppRole or token login | Mount the files from a Secret with `extraVolumes` and `extraVolumeMounts`, and point `role_id_file`, `secret_id_file` or `token_file` at them. Set `serviceAccount.automount: false` if nothing needs the service account token |
-| Static token mode | Not usable: it requires a loopback listen address |
+| Static token mode | Not usable: it requires a loopback listen address. For a trial, run a test identity provider instead, as in [docs/kubernetes-trial.md](../../../docs/kubernetes-trial.md) |
 
 Every value is described in [values.yaml](values.yaml).
 
