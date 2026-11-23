@@ -8,6 +8,13 @@ interface is listed under **Interface changes** in the release that makes it.
 
 ## [Unreleased]
 
+### Documentation
+
+- `docs/kubernetes-trial.md`: a recipe for a throwaway install of the Helm chart on a real
+  cluster, written after installing the published `0.1.0-beta.2` image on k3s (the chart
+  needed no changes). It explains why static token mode cannot be used in a pod and what
+  to run in its place.
+
 ## [0.1.0-beta.2] - 2026-11-20
 
 The second beta: requests from upstreams to the calling client under MCP 2026-07-28,
