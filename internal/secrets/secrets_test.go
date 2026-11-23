@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -311,5 +313,59 @@ func TestNoSecret(t *testing.T) {
 	_, err := cache.Get(context.Background(), cred)
 	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoSecret) {
 		t.Errorf("vault down: %v, want ErrUnavailable and not ErrNoSecret", err)
+	}
+}
+
+// HashiCorp Vault reports a node's role in the health status code: standby and
+// performance-standby nodes answer 429 and 473 and still serve reads.
+func TestHealthyStatusCodes(t *testing.T) {
+	for _, tc := range []struct {
+		code int
+		ok   bool
+	}{{200, true}, {429, true}, {472, true}, {473, true}, {501, false}, {503, false}} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.code)
+			_, _ = w.Write([]byte(`{"initialized":true}`))
+		}))
+		c := New(config.Vault{Address: srv.URL}, nil, nil)
+		if err := c.Healthy(context.Background()); (err == nil) != tc.ok {
+			t.Errorf("health %d: err=%v, want ok=%v", tc.code, err, tc.ok)
+		}
+		srv.Close()
+	}
+}
+
+// Responses shaped as HashiCorp Vault sends them: a KV v1 read carries a default
+// lease_duration and an empty lease_id, a database read carries both in the envelope, and
+// a revoke answers 204 with no body.
+func TestHashiCorpResponseShapes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/kv1/tickets":
+			_, _ = w.Write([]byte(`{"lease_id":"","renewable":false,"lease_duration":2764800,"data":{"token":"v1-tok"},"warnings":null}`))
+		case "/v1/database/creds/app":
+			_, _ = w.Write([]byte(`{"lease_id":"database/creds/app/abc","renewable":true,"lease_duration":300,"data":{"username":"u","password":"p"}}`))
+		case "/v1/sys/leases/revoke":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errors":[]}`))
+		}
+	}))
+	defer srv.Close()
+	c := New(config.Vault{Address: srv.URL}, nil, nil)
+	s, err := c.Read(context.Background(), "kv1/tickets")
+	if err != nil || s.Data["token"] != "v1-tok" || s.LeaseID != "" {
+		t.Fatalf("kv1: %+v %v", s, err)
+	}
+	s, err = c.Read(context.Background(), "database/creds/app")
+	if err != nil || s.LeaseID != "database/creds/app/abc" || s.Lease != 300*time.Second || s.Data["password"] != "p" {
+		t.Fatalf("database: %+v %v", s, err)
+	}
+	if err := c.Revoke(context.Background(), s.LeaseID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := c.Read(context.Background(), "kv/missing"); !errors.Is(err, ErrNoSecret) {
+		t.Fatalf("missing path: %v", err)
 	}
 }
