@@ -40,6 +40,8 @@ cleanup() {
 trap cleanup EXIT
 
 vault() { docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$root" "$vault_c" vault "$@"; }
+# Like vault, but passes this script's standard input on (docker exec drops it without -i).
+vault_in() { docker exec -i -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$root" "$vault_c" vault "$@"; }
 
 mkdir -p "$work"
 docker network create "$net" >/dev/null
@@ -76,7 +78,7 @@ vault write database/roles/app db_name=pg default_ttl=5m max_ttl=10m \
 # What the gateway's identity may do: read the MCP credentials and one database role, and
 # revoke leases. Its token lives 6 seconds unless renewed (the AppRole login is the
 # configured method).
-vault policy write ubixgate - >/dev/null <<'EOF'
+vault_in policy write ubixgate - >/dev/null <<'EOF'
 path "secret/data/mcp/*"       { capabilities = ["read"] }
 path "database/creds/app"      { capabilities = ["read"] }
 path "sys/leases/revoke"       { capabilities = ["update"] }
