@@ -13,7 +13,7 @@ server and what the tests cover.
 | `POST auth/token/renew-self` | Renewing the gateway's own token at half its TTL; if that fails it logs in again |
 | `GET <path>` | Reading a secret. KV v2 (`data` and `metadata` nested under `data`) is unwrapped |
 | `PUT sys/leases/revoke` | Revoking a dynamic secret's lease once the gateway stops using it |
-| `GET sys/health` | Readiness. 200, 429, 472 and 473 count as healthy (active and standby nodes can all serve reads); 501 and 503 do not |
+| `GET sys/health` | Readiness. 200, 429 and 473 count as healthy (the active node and standby nodes serve client requests); 472 (a disaster-recovery secondary), 501 and 503 do not |
 
 The gateway never renews a dynamic secret's lease. It caps its cache at the lease and reads
 a new credential when the old one expires.

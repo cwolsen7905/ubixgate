@@ -24,7 +24,7 @@ PG_IMAGE="${PG_IMAGE:-postgres:16-alpine}"
 GO_IMAGE="${GO_IMAGE:-golang:1.27}"
 root=hcv-dev-root
 kv_token="kv-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-work="$PWD/.hcv-work-$suffix"
+work=$(mktemp -d) # outside the checkout; holds the throwaway AppRole credentials
 
 cleanup() {
 	local rc=$?
@@ -43,7 +43,6 @@ vault() { docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$root"
 # Like vault, but passes this script's standard input on (docker exec drops it without -i).
 vault_in() { docker exec -i -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$root" "$vault_c" vault "$@"; }
 
-mkdir -p "$work"
 docker network create "$net" >/dev/null
 docker run -d --name "$pg_c" --network "$net" --network-alias pg \
 	-e POSTGRES_PASSWORD=pgpass "$PG_IMAGE" >/dev/null
@@ -91,12 +90,12 @@ chmod 755 "$work"
 chmod 644 "$work/role_id" "$work/secret_id"
 
 mkdir -p "$HOME/.cache/ubixgate-go"
-docker run --rm --network "$net" -v "$PWD:/src" -w /src --user "$(id -u):$(id -g)" \
+docker run --rm --network "$net" -v "$PWD:/src" -v "$work:/creds:ro" -w /src --user "$(id -u):$(id -g)" \
 	-v "$HOME/.cache/ubixgate-go:/cache" \
 	-e HOME=/tmp -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod -e GOFLAGS=-buildvcs=false \
 	-e HCVAULT_ADDR=http://vault:8200 \
-	-e HCVAULT_ROLE_ID_FILE="/src/${work#"$PWD"/}/role_id" \
-	-e HCVAULT_SECRET_ID_FILE="/src/${work#"$PWD"/}/secret_id" \
+	-e HCVAULT_ROLE_ID_FILE=/creds/role_id \
+	-e HCVAULT_SECRET_ID_FILE=/creds/secret_id \
 	-e HCVAULT_ROOT="$root" -e HCVAULT_KV_TOKEN="$kv_token" -e HCVAULT_DB_PATH=database/creds/app \
 	"$GO_IMAGE" go test -count=1 -v -run TestHashiCorpVault ./test | tee hashicorp-vault-output.txt
 

@@ -317,12 +317,13 @@ func TestNoSecret(t *testing.T) {
 }
 
 // HashiCorp Vault reports a node's role in the health status code: standby and
-// performance-standby nodes answer 429 and 473 and still serve reads.
+// performance-standby nodes answer 429 and 473 and still serve reads; a disaster-recovery
+// secondary (472) does not.
 func TestHealthyStatusCodes(t *testing.T) {
 	for _, tc := range []struct {
 		code int
 		ok   bool
-	}{{200, true}, {429, true}, {472, true}, {473, true}, {501, false}, {503, false}} {
+	}{{200, true}, {429, true}, {472, false}, {473, true}, {501, false}, {503, false}} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.code)
 			_, _ = w.Write([]byte(`{"initialized":true}`))

@@ -191,9 +191,9 @@ func (c *Client) Revoke(ctx context.Context, leaseID string) error {
 
 // Healthy reports whether Vault answers its health endpoint as initialised and unsealed.
 // HashiCorp Vault uses the status code for the node's role: 200 is the active node, and
-// 429, 472 and 473 are standby, disaster-recovery and performance-standby nodes. All of
-// them can serve reads, so all count as healthy. 501 (not initialised) and 503 (sealed)
-// do not.
+// 429 and 473 are standby and performance-standby nodes. Both serve client requests, so
+// they count as healthy. 472 (a disaster-recovery secondary) refuses client requests until
+// it is promoted, and 501 (not initialised) and 503 (sealed) cannot serve, so they do not.
 func (c *Client) Healthy(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.addr+"/v1/sys/health", nil)
 	if err != nil {
@@ -206,7 +206,7 @@ func (c *Client) Healthy(ctx context.Context) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusTooManyRequests, 472, 473:
+	case http.StatusOK, http.StatusTooManyRequests, 473:
 		return nil
 	}
 	return fmt.Errorf("vault GET sys/health: HTTP %d", resp.StatusCode)
