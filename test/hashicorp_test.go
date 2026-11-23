@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -134,13 +135,25 @@ policy:
 		gw.Config.Handler = rt.Handler
 		gw.Start()
 		defer gw.Close()
-		resp, err := http.Get(strings.TrimSuffix(url, "/mcp") + "/readyz")
-		if err != nil {
-			t.Fatalf("readyz: %v", err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != 200 {
-			t.Fatalf("readyz: HTTP %d", resp.StatusCode)
+		// Readiness waits for the upstream to connect and list its tools, so poll.
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			resp, err := http.Get(strings.TrimSuffix(url, "/mcp") + "/readyz")
+			code := 0
+			if err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if code = resp.StatusCode; code != 200 {
+					err = errors.New(string(body))
+				}
+			}
+			if code == 200 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("gateway not ready: HTTP %d %v", code, err)
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 		e := &env{url: url, idp: idp}
 		s := e.connect(t, e.token("alice@example.com", "developers"), "2025-11-25")
