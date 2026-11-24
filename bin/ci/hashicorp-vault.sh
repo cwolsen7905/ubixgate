@@ -83,11 +83,14 @@ path "database/creds/app"      { capabilities = ["read"] }
 path "sys/leases/revoke"       { capabilities = ["update"] }
 EOF
 vault auth enable approle >/dev/null
-vault write auth/approle/role/ubixgate token_policies=ubixgate token_ttl=6s token_max_ttl=10m >/dev/null
+vault write auth/approle/role/ubixgate token_policies=ubixgate token_ttl=6s token_max_ttl=10m secret_id_num_uses=1 >/dev/null
 vault read -field=role_id auth/approle/role/ubixgate/role-id >"$work/role_id"
+# Each secret ID works once, so a client cannot quietly log in again: the token renewal
+# test fails if renew-self does not work. The client and the gateway get one each.
 vault write -f -field=secret_id auth/approle/role/ubixgate/secret-id >"$work/secret_id"
+vault write -f -field=secret_id auth/approle/role/ubixgate/secret-id >"$work/gateway_secret_id"
 chmod 755 "$work"
-chmod 644 "$work/role_id" "$work/secret_id"
+chmod 644 "$work/role_id" "$work/secret_id" "$work/gateway_secret_id"
 
 mkdir -p "$HOME/.cache/ubixgate-go"
 docker run --rm --network "$net" -v "$PWD:/src" -v "$work:/creds:ro" -w /src --user "$(id -u):$(id -g)" \
@@ -95,7 +98,7 @@ docker run --rm --network "$net" -v "$PWD:/src" -v "$work:/creds:ro" -w /src --u
 	-e HOME=/tmp -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod -e GOFLAGS=-buildvcs=false \
 	-e HCVAULT_ADDR=http://vault:8200 \
 	-e HCVAULT_ROLE_ID_FILE=/creds/role_id \
-	-e HCVAULT_SECRET_ID_FILE=/creds/secret_id \
+	-e HCVAULT_SECRET_ID_FILE=/creds/secret_id -e HCVAULT_GATEWAY_SECRET_ID_FILE=/creds/gateway_secret_id \
 	-e HCVAULT_ROOT="$root" -e HCVAULT_KV_TOKEN="$kv_token" -e HCVAULT_DB_PATH=database/creds/app \
 	"$GO_IMAGE" go test -count=1 -v -run TestHashiCorpVault ./test | tee hashicorp-vault-output.txt
 

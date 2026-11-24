@@ -44,7 +44,7 @@ The `hashicorp-vault` job (`bin/ci/hashicorp-vault.sh`) starts a HashiCorp Vault
 container and a throwaway Postgres on a private Docker network, then runs the
 `TestHashiCorpVault` Go test against them. It checks:
 
-- AppRole login, with a token TTL of a few seconds;
+- AppRole login, with a token TTL of a few seconds and single-use secret IDs, so the renewal check below cannot pass by logging in again;
 - KV v2 reads, a missing secret, and a path the policy forbids;
 - renewal: reads keep working after the token's original TTL has passed;
 - a database credential: the lease ID and duration arrive in the envelope, the lease exists,

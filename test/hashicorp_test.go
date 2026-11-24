@@ -23,7 +23,9 @@ import (
 // real HashiCorp Vault. It needs a server prepared by bin/ci/hashicorp-vault.sh and is
 // skipped without HCVAULT_ADDR, so `go test` needs no Docker.
 //
-// Environment: HCVAULT_ADDR, HCVAULT_ROLE_ID_FILE, HCVAULT_SECRET_ID_FILE, HCVAULT_ROOT
+// Environment: HCVAULT_ADDR, HCVAULT_ROLE_ID_FILE, HCVAULT_SECRET_ID_FILE,
+// HCVAULT_GATEWAY_SECRET_ID_FILE (a second secret ID for the gateway; the role's secret
+// IDs are single use, so a failed renewal cannot be hidden by a new login), HCVAULT_ROOT
 // (a root token, used only to check what the server holds), HCVAULT_KV_TOKEN (the value
 // stored at secret/mcp/tickets), HCVAULT_DB_PATH (a database creds path).
 func TestHashiCorpVault(t *testing.T) {
@@ -60,7 +62,9 @@ func TestHashiCorpVault(t *testing.T) {
 
 	t.Run("token renewal", func(t *testing.T) {
 		// The role's token TTL is a few seconds, so KeepAlive renews it (at half the TTL)
-		// several times; reads must keep working well past the original TTL.
+		// several times; reads must keep working well past the original TTL. Secret IDs
+		// are single use, so KeepAlive's login fallback cannot succeed: only a working
+		// renew-self keeps the token alive.
 		kctx, stop := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() { c.KeepAlive(kctx); close(done) }()
@@ -97,6 +101,10 @@ func TestHashiCorpVault(t *testing.T) {
 	})
 
 	t.Run("gateway injects the kv2 credential", func(t *testing.T) {
+		gwSecretID := os.Getenv("HCVAULT_GATEWAY_SECRET_ID_FILE")
+		if gwSecretID == "" {
+			gwSecretID = cfg.Auth.SecretIDFile
+		}
 		idp := fakes.NewIdP()
 		defer idp.Server.Close()
 		tk := &fakes.Tickets{Token: os.Getenv("HCVAULT_KV_TOKEN"), Identity: "svc-tickets"}
@@ -111,7 +119,7 @@ public_url: ` + url + `
 identity: { mode: jwt, issuer: ` + idp.Issuer + `, jwks_url: ` + idp.JWKSURL() + `, claims: { user: email } }
 vault:
   address: ` + addr + `
-  auth: { method: approle, role_id_file: ` + cfg.Auth.RoleIDFile + `, secret_id_file: ` + cfg.Auth.SecretIDFile + ` }
+  auth: { method: approle, role_id_file: ` + cfg.Auth.RoleIDFile + `, secret_id_file: ` + gwSecretID + ` }
 upstreams:
   - name: tickets
     transport: http
