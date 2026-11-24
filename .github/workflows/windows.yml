@@ -1,0 +1,35 @@
+name: Windows
+
+# Windows is not part of the gate (`make check` needs bash, make and golangci-lint), and
+# pushes mirrored from GitLab do not start workflows here. This job builds the module and
+# runs the Go tests on a Windows runner, on demand and once a week:
+#   gh workflow run Windows --repo ubixsys/ubixgate --ref <branch>
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go test (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          check-latest: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
