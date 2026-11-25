@@ -149,7 +149,7 @@ identity:
   jwks_url: https://idp.example.com/jwks
   claims: { user: email, groups: groups, client: azp }
 
-vault:                                     # uBixVault (HashiCorp Vault: untested)
+vault:                                     # uBixVault or HashiCorp Vault
   address: https://vault.example.com
   auth: { method: approle, role_id_file: /run/role_id, secret_id_file: /run/secret_id }
   # or: { method: kubernetes, role: ubixgate }  or: { method: token, token_file: ... }
@@ -422,7 +422,7 @@ policy allows can still do everything that call can do.
 
 | Area | State |
 |---|---|
-| Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo). HashiCorp Vault serves the same API but is untested; testing it is planned for a later release |
+| Vault servers | Tested against uBixVault (1.7.0, in CI through the Compose demo) and HashiCorp Vault (1.18, in CI against a dev-mode container). The HashiCorp run covers AppRole login, KV v2 reads, token renewal, a database lease and its revoke; the `kubernetes` and `token` logins are tested against fakes only. Other Vault-compatible servers (OpenBao and the like) are untried. See [docs/vault.md](docs/vault.md) |
 | Upstream credentials | One service credential per upstream, or, for HTTP upstreams, one per user read from a `{user}` path, which an administrator stores in Vault for each person. With a service credential, upstream logs see the gateway and the audit log is the per-user record. Exchanging the caller's token at the identity provider for one per upstream (RFC 8693) is not built. stdio upstreams take only a service credential |
 | Policy engine | The YAML rules only. The evaluator sits behind one interface so another engine could be added |
 | Leases | A dynamic secret's lease caps the cache, read from the envelope (HashiCorp Vault) or from inside `data` (uBixVault). A lease the gateway stops using is revoked: after the longest upstream timeout when the cache replaces or drops it (an expired value nobody asks for again is dropped within a minute), when a stdio process holding it stops, and at shutdown. A revoke that fails is logged and the lease expires on its own. A gateway that is killed revokes nothing |

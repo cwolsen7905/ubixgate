@@ -3,3 +3,4 @@
 dist/
 .chart-check/
 demo-output.txt
+hashicorp-vault-output.txt

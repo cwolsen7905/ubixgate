@@ -1,5 +1,5 @@
-// Package secrets is a small client for the Vault HTTP API (tested against uBixVault;
-// HashiCorp Vault serves the same API but is not yet tested): the gateway's own login and renewal, reading a secret, and a
+// Package secrets is a small client for the Vault HTTP API (tested against uBixVault and
+// HashiCorp Vault): the gateway's own login and renewal, reading a secret, and a
 // per-path cache so a burst of calls makes one read.
 package secrets
 
@@ -190,9 +190,26 @@ func (c *Client) Revoke(ctx context.Context, leaseID string) error {
 }
 
 // Healthy reports whether Vault answers its health endpoint as initialised and unsealed.
+// HashiCorp Vault uses the status code for the node's role: 200 is the active node, and
+// 429 and 473 are standby and performance-standby nodes. Both serve client requests, so
+// they count as healthy. 472 (a disaster-recovery secondary) refuses client requests until
+// it is promoted, and 501 (not initialised) and 503 (sealed) cannot serve, so they do not.
 func (c *Client) Healthy(ctx context.Context) error {
-	_, err := c.do(ctx, http.MethodGet, "sys/health", "", nil)
-	return err
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.addr+"/v1/sys/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("vault GET sys/health: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusTooManyRequests, 473:
+		return nil
+	}
+	return fmt.Errorf("vault GET sys/health: HTTP %d", resp.StatusCode)
 }
 
 // KeepAlive renews the gateway's token at half its TTL, and logs in again when renewal

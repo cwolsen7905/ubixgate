@@ -129,13 +129,29 @@ demo-compose:
     paths: [demo-output.txt]
     expire_in: 1 week
 
+# The gateway against a real HashiCorp Vault: a dev-mode server and a throwaway Postgres on
+# a private network, then the TestHashiCorpVault Go test (bin/ci/hashicorp-vault.sh). It
+# covers AppRole login, KV v2 reads, renewal of the gateway's token, a database lease and
+# its revoke. Publishes no host ports. It pulls the Vault and Postgres images, so it needs
+# network access.
+hashicorp-vault:
+  extends: .every_pipeline
+  tags: [shell]
+  timeout: 15 minutes
+  script:
+    - bash bin/ci/hashicorp-vault.sh
+  artifacts:
+    when: always
+    paths: [hashicorp-vault-output.txt]
+    expire_in: 1 week
+
 # dev -> main. main only ever moves by fast-forward from a green dev (bin/promote.sh, which
 # fails closed and never forces). Runs only on a push pipeline of dev, after every check
 # above has passed. Needs the GITLAB_PROMOTE_TOKEN CI variable (masked and protected).
 promote-to-main:
   stage: promote
   tags: [shell]
-  needs: [public-boundary, go-check, go-cross, chart-check, demo-compose, image-build]
+  needs: [public-boundary, go-check, go-cross, chart-check, demo-compose, hashicorp-vault, image-build]
   resource_group: promote-main
   interruptible: false
   variables:
