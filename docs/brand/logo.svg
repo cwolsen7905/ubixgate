@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 162 40" width="162" height="40">
+  <title>uBixGate</title>
+  <g transform="translate(4 4)">
+    <rect width="32" height="32" fill="#0f62fe"/>
+    <path d="M10 25V7.5h12V25" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="square"/>
+    <rect x="5.5" y="24" width="21" height="3" fill="#ffffff"/>
+    <rect x="14" y="14" width="4" height="4" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <text x="46" y="28" font-family="'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif" font-size="22" fill="#161616"><tspan font-weight="300">uBix</tspan><tspan font-weight="600">Gate</tspan></text>
+</svg>
