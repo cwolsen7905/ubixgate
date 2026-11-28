@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>uBixGate</title>
+  <rect width="32" height="32" fill="#0f62fe"/>
+  <!-- Square door on a threshold, light coming through: one way in, every call checked.
+       Straight-topped on purpose so it never echoes uBixShepherd's crook. -->
+  <path d="M10 25V7.5h12V25" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="square"/>
+    <rect x="5.5" y="24" width="21" height="3" fill="#ffffff"/>
+    <rect x="14" y="14" width="4" height="4" fill="#ffffff" opacity="0.55"/>
+</svg>
